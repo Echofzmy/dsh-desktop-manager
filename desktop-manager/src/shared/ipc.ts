@@ -1,0 +1,18 @@
+export const IPC = {
+  snapshot: 'manager:snapshot',
+  runtimeRegister: 'manager:runtime:register',
+  runtimeRefresh: 'manager:runtime:refresh',
+  environmentCreate: 'manager:environment:create',
+  environmentClone: 'manager:environment:clone',
+  instanceCreate: 'manager:instance:create',
+  instanceStart: 'manager:instance:start',
+  instanceStop: 'manager:instance:stop',
+  instanceRestart: 'manager:instance:restart',
+  instanceRecover: 'manager:instance:recover',
+  instanceLog: 'manager:instance:log',
+  directoryChoose: 'manager:directory:choose',
+  externalOpen: 'manager:external:open',
+  viewShow: 'manager:view:show',
+  viewHide: 'manager:view:hide',
+  snapshotChanged: 'manager:snapshot:changed',
+} as const

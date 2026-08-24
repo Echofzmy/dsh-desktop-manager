@@ -1,0 +1,62 @@
+{
+  "name": "dsh-desktop-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop runtime and instance manager for DeepSeek Harness",
+  "author": "liangyc",
+  "type": "module",
+  "main": "out/main/index.js",
+  "packageManager": "pnpm@11.5.2",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "pnpm run typecheck && electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:electron": "pnpm run build && node tests/electron-smoke.mjs",
+    "package": "pnpm run build && electron-builder --dir"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "semver": "^7.7.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/semver": "^7.7.1",
+    "@vitejs/plugin-react": "^5.1.1",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.8.1",
+    "electron-vite": "^5.0.0",
+    "jsdom": "^27.4.0",
+    "playwright-core": "^1.62.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.11"
+  },
+  "build": {
+    "appId": "ai.deepseek.dsh-manager",
+    "productName": "DSH 管理器",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    }
+  }
+}
