@@ -18,6 +18,11 @@ function environmentId(): string {
   return `env-${randomUUID()}`
 }
 
+export interface StagedEnvironmentDeletion {
+  original: string
+  staged: string
+}
+
 export class EnvironmentService {
   readonly #root: string
 
@@ -38,6 +43,26 @@ export class EnvironmentService {
       path,
       createdAt: new Date().toISOString(),
     }
+  }
+
+  planDiscard(environment: EnvironmentRecord): StagedEnvironmentDeletion | undefined {
+    if (environment.kind === 'production') return undefined
+    const original = join(this.#root, environment.id)
+    return { original, staged: `${original}.deleting-${randomUUID()}` }
+  }
+
+  async stageDiscard(environment: EnvironmentRecord, planned = this.planDiscard(environment)): Promise<StagedEnvironmentDeletion | undefined> {
+    if (!planned) return undefined
+    await rename(planned.original, planned.staged)
+    return planned
+  }
+
+  async restoreDiscard(staged: StagedEnvironmentDeletion): Promise<void> {
+    await rename(staged.staged, staged.original)
+  }
+
+  async finalizeDiscard(staged: StagedEnvironmentDeletion): Promise<void> {
+    await rm(staged.staged, { recursive: true, force: true })
   }
 
   async discard(environment: EnvironmentRecord): Promise<void> {

@@ -1,6 +1,6 @@
 # DSH 桌面实例管理器 设计方案
 
-状态：MVP 实施中。本文记录当前实现约束、后续阶段与仍需验证的发布能力。
+状态：完整功能已实施并通过单元、真实 Electron 与打包应用验证。Apple Developer ID 签名、公证和管理器自身更新源属于外部发布基础设施。
 
 ## 1. 目标
 
@@ -22,15 +22,17 @@
 /Users/liangyc/Documents/Deepseek-Harness/
 ├── desktop-manager/   # 本桌面管理器
 ├── dsh-v1/            # 当前本地运行版本
-├── dsh-v2/            # 需要候选版本时再创建
+├── <其他-runtime>/    # 用户按需注册的任意本地运行版本
 └── .../               # 更多本地版本
 
 <应用 bundle>/Contents/Resources/runtimes/official/bundled/   # 内置官方 DSH，只读，随应用签名分发
 <应用数据目录>/
 ├── runtimes/official/downloaded/<version>/   # 已下载官方 DSH，只读
-├── instances/<instance-id>/     # 实例元数据与隔离环境
-├── logs/<instance-id>/          # 启动与运行日志
-└── locks/                       # 环境与端口锁
+├── worktrees/<runtime-id>/        # 管理器创建的 Git worktree
+├── environments/<environment-id>/ # 独立或克隆 DSH_HOME
+├── backups/<backup-id>/           # 环境备份、清单与收据
+├── logs/instances|tasks/          # 实例与任务日志
+└── manager-state.json             # version 3 原子状态
 ```
 
 应用数据目录位于 macOS Application Support，路径示例为 `~/Library/Application Support/DSH Manager/`。应用数据目录存放下载的官方版本、环境、实例状态、日志与锁，不存放内置官方版本；内置官方版本位于应用 bundle 内（见第 2 节目录结构）。应用数据绝不存放在被管理的运行版本目录内，保证运行版本全部损坏时管理器仍可启动。
@@ -49,7 +51,7 @@
 
 实例（Instance）：一个可运行单元，由一个运行版本、一个工作目录、一个环境、一个端口组合而成。一个运行版本可以同时有多个实例，也可以只有零个。
 
-选择运行版本与选择工作目录必须独立。这支撑自举开发：稳定版本 dsh-v1 以 dsh-v2 为工作目录，负责修改 dsh-v2；同时 dsh-v2 以独立端口和隔离环境启动候选实例用于测试。dsh-v2 完全崩溃时，dsh-v1 实例不受影响，可以继续修复 dsh-v2。
+选择运行版本与选择工作目录必须独立。这支撑自举开发：任意稳定 runtime 可以把另一个源码目录作为工作区并负责修改；候选 runtime 同时以独立端口和隔离环境启动测试实例。候选版本完全无法启动时，稳定实例仍不受影响，可以继续修复其工作区。
 
 ## 4. 功能范围
 
@@ -101,28 +103,28 @@
 
 运行时工作面列出路径、版本、Git 状态和全部预检项，支持本地源码 checkout 与已发布 `@deepseek-ai/dsh` 包布局。固定文案和修复建议使用中文，路径、版本与底层原始错误保持原值。
 
-MVP 的设置入口位于侧栏底部，目前进入运行时管理；后续官方更新、默认版本、数据目录与日志目录设置采用 DSH 同款两列设置面板，而不是新增顶部页面。
+设置入口位于侧栏底部，采用 DSH 同款两列设置面板，可选择实例在内嵌视图或外部浏览器中打开，并控制启动时官方更新检查。中文原生应用菜单提供新建实例、概览、运行时、设置、编辑和窗口命令；默认运行时、数据位置及日志路径在对应管理工作面直接显示。
 
 ## 6. 运行版本
 
 ### 6.1 内置官方版本
 
-应用安装时内置一份已验证的官方 DSH 构建产物，存放于应用 bundle 内 `Contents/Resources/runtimes/official/bundled/`，只读，随应用签名分发。内置版本在应用打包时生成，并附带该打包对应的 release manifest 与 checksum（见 6.2 与 14）。
+应用安装时内置一份已验证的官方 DSH 完整 npm 消费者依赖闭包，存放于应用 bundle 内 `Contents/Resources/runtimes/official/bundled/current/`，只读。打包脚本生成 package-lock、根包 integrity、安装收据、SHA-256 文件清单与 READY 提交标记。
 
-内置版本自包含：携带兼容的 Node 运行时与完整的已安装、已构建 DSH 依赖闭包，启动不依赖系统 Node 或 pnpm。
+内置版本自包含完整的已安装、已构建 DSH 依赖闭包，并通过 Electron 自带 Node 启动，不依赖系统 Node 或 pnpm。
 
 内置版本保证离线或网络故障时仍有一个可运行的官方版本。下载新官方版本不会覆盖内置版本。
 
 ### 6.2 已下载官方版本
 
-应用从 npm 查询 `@deepseek-ai/dsh` 最新版本。用户确认后下载对应 tarball，校验后解压到应用数据目录 `runtimes/official/downloaded/<version>/`，注册为只读官方运行版本。
+应用从固定 npm registry 查询 `@deepseek-ai/dsh` 最新版本。用户确认后，安装器在隔离临时 HOME、cache 与 userconfig 中通过固定 npm CLI 安装精确版本及完整消费者依赖闭包，校验后原子发布到应用数据目录 `runtimes/official/downloaded/<version>/`，注册为只读官方运行版本。
 
-校验不假设上游提供发布签名，按以下信任源执行：
-- 仅从固定官方源通过 HTTPS 下载（npm registry 与官方发布页）；
-- 校验 npm 元数据中的 `dist.integrity`（存在时）；
-- 校验解压后的包名与版本等于期望值；
-- 与应用打包时生成的 release manifest/checksum 对比；
-- 仅当存在权威签名时才执行签名验证。
+校验按以下信任边界执行：
+- registry 固定为 `https://registry.npmjs.org`，拒绝重定向和跨 origin tarball；
+- 强制校验 npm 元数据中的 sha512 `dist.integrity`；
+- 校验 package-lock 根包名称、版本和 integrity 等于期望值；
+- 校验 CLI 身份、完整运行时预检、一次性 DSH_HOME Web readiness/HTTP 探针和发布前 SHA-256 文件清单；
+- 写入安装收据和 READY 后才通过原子目录 rename 发布。
 
 校验失败则丢弃下载结果，不注册。下载行为可被用户取消。
 
@@ -145,7 +147,7 @@ MVP 的设置入口位于侧栏底部，目前进入运行时管理；后续官�
 - `node_modules` 已安装，缺失时提示先执行依赖安装。
 - 完整构建产物存在：至少包含 `apps/cli/lib/bin.js`、依赖包 `lib` 与 `apps/web/dist/index.html`；单独存在 CLI 文件不代表可启动。
 - 目录位于 Git 仓库时，按该 runtime 子目录范围记录 commit 与工作树状态。
-- 后续阶段增加一次性 DSH_HOME 真实启动探针和构建 fingerprint；MVP 静态预检通过后仍以实际 spawn 与 readiness 为最终结果。
+- 官方安装额外执行隔离的一次性 DSH_HOME Web readiness/HTTP 探针并生成构建文件 fingerprint；本地源码仍以每次实际 spawn、readiness 与 HTTP 确认为最终结果。
 
 预检结果为通过、警告、失败三级。失败项列出具体原因与修正动作。预检通过才能启动实例。
 
@@ -177,7 +179,7 @@ node <runtime>/apps/cli/lib/bin.js web --host 127.0.0.1 --port <port-or-0> --no-
 
 异常退出：进程非预期退出时，管理器清理同组后代并标记异常，不自动重启。若管理器自身崩溃或被 SIGKILL，上次处于活动状态的实例在下次启动进入隔离；管理器保留 PID、端口和日志线索，禁止直接启动。用户明确确认旧进程已停止并选择自动或固定端口后，管理器同时探测旧进程组和端口，只有均已释放才解除隔离。
 
-macOS 关闭管理器窗口只隐藏界面，Electron 主进程继续监督运行中实例；从菜单真正退出应用时停止全部受管进程组。Windows/Linux 在没有托盘入口的 MVP 中关闭最后窗口即受控退出。MVP 不自动接管管理器崩溃后可能存在的孤儿进程：仅凭 PID 会遇到复用、日志句柄和端口归属问题，因此采用持久化隔离与人工确认；跨管理器进程存活仍需要后续独立 supervisor/helper 与可重连身份协议。
+macOS 关闭管理器窗口只隐藏界面，Electron 主进程继续监督运行中实例；从菜单真正退出应用时停止全部受管进程组。Windows/Linux 关闭最后窗口时受控退出。管理器不冒险接管崩溃后可能存在的孤儿进程：仅凭 PID 会遇到复用、日志句柄和端口归属问题，因此持久化 PID、端口、日志和操作阶段并进入隔离，要求用户确认进程组与端口均已释放。
 
 ## 8. 环境与数据
 
@@ -195,13 +197,13 @@ DSH_HOME 由管理器通过环境变量注入，用于隔离 DSH 的设置、凭
 
 数据安全：管理器自身不解析会话格式，不做会话合并或事件级迁移。复制、提升与回退以完整环境目录为单位。
 
-管理器元数据使用 version 2 状态格式。提交顺序为同目录临时文件写入与 `fsync`、上一 primary 的备份临时文件写入与 `fsync`、原子替换 `.bak`、目录 `fsync`、原子替换 primary、再次目录 `fsync`；内存状态只在该流程成功后发布。损坏 primary 从上一有效备份恢复并隔离原文件；未来格式版本拒绝降级读取。version 1 中无法确定来源的非零端口必须由用户重新确认模式。
+管理器元数据使用 version 3 状态格式，覆盖设置、运行时、环境、实例、任务、备份、提升、模板和长操作资源锁。提交顺序为同目录临时文件写入与 `fsync`、上一 primary 的备份临时文件写入与 `fsync`、原子替换 `.bak`、目录 `fsync`、原子替换 primary、再次目录 `fsync`；内存状态只在该流程成功且完整严格解码通过后发布。损坏 primary 从上一有效备份恢复并隔离原文件；未来格式版本拒绝降级读取。version 1/2 自动迁移，无法确定来源的非零端口必须由用户重新确认模式。受管 runtime/worktree/environment 删除在首次 rename 前写入包含原路径、暂存路径和资源键的持久 operation journal，元数据删除与 `metadata-removed` 阶段同一次状态提交，清理后才进入 committed；启动对账同时处理进程崩溃和 `.bak` 复活旧元数据。环境 restore 使用 `staged-ready`、`diagnostic-moved`、`restored` 三阶段 swap journal，canonical 缺失时可幂等完成或恢复。
 
 ## 9. 默认版本、提升与回退
 
 默认版本是新建实例的预选运行版本，不自动切换运行中实例，不自动替换生产环境。
 
-提升流程：候选实例在隔离端口与隔离环境中完成构建、启动、就绪检查，并由用户实际发起一次测试对话；停止生产实例；备份生产环境；用候选运行版本启动生产实例；确认启动与对话正常；把候选运行版本记录为新的默认版本；保留上一运行版本与备份。
+提升流程：候选实例在隔离端口与隔离环境中完成构建、启动、就绪检查，并由用户实际发起一次测试对话；本地候选必须保持测试时的干净 commit 与完整依赖闭包指纹，再复制为管理器私有、不可构建的 production snapshot 并复核身份；停止生产实例；备份生产环境；紧邻 spawn 重新验证目标身份。启动先持久化 launch intent，macOS detached process group 在一次性随机 gate 后等待，PID 状态提交成功才允许 exec DSH。确认启动与对话正常后把 snapshot 记录为新的默认版本，并保留上一运行版本与备份。任何恢复失败都保持 recovery-required 隔离，普通 PID/端口恢复不能解除。
 
 回退流程：停止故障实例；把故障后的环境目录移到诊断目录；恢复备份的生产环境；用上一运行版本启动生产实例；确认恢复正常。回退同时恢复运行版本与环境，因为仅回退代码可能遇到新版已升级的数据格式。
 
@@ -219,43 +221,33 @@ DSH_HOME 由管理器通过环境变量注入，用于隔离 DSH 的设置、凭
 
 WebContents 安全配置：nodeIntegration 关闭，contextIsolation 开启；限制页面只能导航到 127.0.0.1 的受管端口；实例页面与管理器 IPC 隔离；不向 DSH 页面注入 Node 能力。DSH 自身只绑定回环地址，管理器不自动开放 LAN 端口。
 
-凭据策略：DEEPSEEK_API_KEY 与 provider 凭据由用户放入环境（环境变量或 DSH_HOME 内文件），管理器不读取、不存储、不展示凭据值。官方版本下载校验使用固定官方源 HTTPS、npm dist.integrity、release manifest/checksum，以及存在时的权威签名，不涉及用户凭据。
+凭据策略：DEEPSEEK_API_KEY 与 provider 凭据由用户放入环境（环境变量或 DSH_HOME 内文件），管理器不读取、不存储、不展示凭据值。官方安装使用固定 registry、独立临时 HOME/cache/userconfig，删除 npm token、auth、proxy 与 Node 注入环境，并以 `--ignore-scripts` 禁止 lifecycle 代码；lockfile 除根条目外的每个包都必须具有固定 HTTPS registry URL 与 sha512 integrity。receipt 强制绑定 schema、source、registry、platform 和当前架构；发现、复用、碰撞发布与每次启动都重新核对 receipt、READY、完整文件清单及实际文件。
 
 ## 11. 仓库现状
 
-当前主仓库为 `/Users/liangyc/Documents/Deepseek-Harness`，根级 `.git` 统一跟踪 `desktop-manager/` 与 `dsh-v1/`；旧的嵌套 Git 元数据和旧 GitHub 私有仓库已经删除。`dsh-v2/` 在实际需要候选版本时再创建，不预先占位。
+当前主仓库为 `/Users/liangyc/Documents/Deepseek-Harness`，根级 `.git` 统一跟踪 `desktop-manager/` 与现有 DSH 源码目录；桌面管理器不预设、创建或依赖任何候选版本目录。
 
 当前 `dsh-v1` 是可注册的本地源码 runtime，但必须完成依赖安装和完整构建后才能启动。生产环境继续使用用户明确注册的 `~/.dsh`；开发实例默认使用应用数据目录中的独立环境或从现有环境克隆的副本。
 
-## 12. MVP 阶段
+## 12. 实施状态
 
-第一阶段：实例管理基础。注册本地运行版本，预检，创建实例，启动停止重启，端口分配，隔离环境，嵌入 GUI，日志查看。内置官方版本随应用提供。
+第一阶段已完成：注册与预检、实例生命周期、自动端口、独立环境、嵌入 GUI、日志、进程组停止、崩溃隔离与内置官方 runtime。
 
-第二阶段：官方版本更新。检查更新、下载、校验、注册已下载官方版本。
+第二阶段已完成：固定 registry 更新检查、完整依赖闭包安装、取消、校验、原子发布、默认版本和安全删除。
 
-第三阶段：开发能力。展示 Git 状态与 commit，执行依赖安装、类型检查、选择测试、构建，启动前预检门禁。
+第三阶段已完成：Git 状态、受限依赖安装/类型检查/测试/构建任务、持久日志、取消与启动门禁。
 
-第四阶段：提升与回退。生产提升流程、环境备份、代码与数据回退、默认版本语义。
+第四阶段已完成：完整环境备份、候选健康与干净 commit 约束、生产提升、用户确认、代码与 DSH_HOME 联合回退及诊断保留。
 
-第五阶段：增强。Git worktree 管理、自动创建版本目录、菜单栏控制、管理器自动更新、实例模板。
+第五阶段已完成：管理器受管 Git worktree、自动目录分配、中文原生菜单、设置、实例模板、DSH 图标、离线 runtime、DMG/ZIP 构建。管理器自身自动更新需要实际发布 URL、签名证书和发布服务；未配置仓库 remote 或虚构 endpoint。
 
 ## 13. 非目标
 
-本设计不做以下事项：插件安装与插件市场；移动端应用；多设备同步；DSH 核心功能开发；会话内容迁移工具；局域网开放；通用 CI 与测试编排产品。管理器在第三阶段可调用所选仓库的测试命令，但测试编排与自动化测试套件不属于本设计范围。
+本设计不做以下事项：插件安装与插件市场；移动端应用；多设备同步；DSH 核心功能开发；会话内容迁移工具；局域网开放；通用 CI 与测试编排产品。管理器可以调用所选仓库的固定任务，但不接受 renderer 提交任意命令。
 
-## 14. 待评审决策
+## 14. 已确定行为
 
-嵌入式 GUI 与外部浏览器并存时，默认打开方式。
-
-生产提升时是否要求候选版本对应已提交 commit，还是允许脏工作树。
-
-克隆环境的创建频率与保留数量。
-
-同一本地运行版本是否允许同时运行多个生产实例。
-
-官方版本校验的信任源与顺序：固定官方源 HTTPS、npm dist.integrity、期望包名与版本、应用打包生成的 release manifest/checksum；仅当存在权威签名时使用签名验证。
-
-默认版本与生产环境解绑后，新建实例的默认环境是否始终为隔离环境。
+默认打开方式可在设置中选择，初始为内嵌 GUI。生产提升要求本地候选对应干净、已提交的 Git commit。环境备份由用户与提升事务显式创建，不自动按时间删除。同一规范化 DSH_HOME 不能被两个受管实例并发写入；新建实例默认使用隔离环境。官方校验顺序固定，不接受用户替换 registry 或 tarball。
 
 ## 15. 附注
 

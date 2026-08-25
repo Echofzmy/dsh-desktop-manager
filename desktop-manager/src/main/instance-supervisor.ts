@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdir, open, readFile, stat, type FileHandle } from 'node:fs/promises'
+import { mkdir, open, readFile, rm, stat, writeFile, type FileHandle } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
+import { embeddedNodeLaunch, systemNodeLaunch } from './embedded-node.js'
 import type { EnvironmentRecord, InstanceLog, InstanceRecord, RuntimeRecord } from '../shared/types.js'
 
 interface ExitResult {
@@ -114,17 +116,43 @@ export class InstanceSupervisor {
       rejectReady = reject
     })
 
+    const launchGate = process.platform === 'win32' ? undefined : join(logDirectory, `.launch-${randomUUID()}.gate`)
+    if (launchGate) await rm(launchGate, { force: true })
+    try {
+      await this.#events.onStatus(instance.id, {
+        ...instance,
+        status: 'starting',
+        pid: undefined,
+        startedAt: new Date().toISOString(),
+        lastError: undefined,
+        interrupted: true,
+      })
+    } catch (error) {
+      await log.close().catch(() => undefined)
+      throw error
+    }
+
     let child: ChildProcess
     try {
-      child = spawn('node', [
+      const launch = runtime.source === 'local'
+        ? systemNodeLaunch({ DSH_HOME: environment.path })
+        : embeddedNodeLaunch({ DSH_HOME: environment.path })
+      const nodeArguments = runtime.source === 'local' ? [] : ['--expose-internals']
+      const runtimeArguments = [
+        ...nodeArguments,
         runtime.preflight.entryPath,
         'web',
         '--host', '127.0.0.1',
         '--port', String(requestedPort),
         '--no-open',
-      ], {
+      ]
+      const executable = launchGate ? '/bin/sh' : launch.executable
+      const arguments_ = launchGate
+        ? ['-c', 'gate="$1"; shift; while [ ! -f "$gate" ]; do sleep 0.05; done; exec "$@"', 'dsh-launch', launchGate, launch.executable, ...runtimeArguments]
+        : runtimeArguments
+      child = spawn(executable, arguments_, {
         cwd: instance.workspacePath,
-        env: { ...process.env, DSH_HOME: environment.path },
+        env: launch.env,
         detached: process.platform !== 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
       })
@@ -198,6 +226,7 @@ export class InstanceSupervisor {
     }
     try {
       await this.#events.onStatus(instance.id, starting)
+      if (launchGate) await writeFile(launchGate, 'go\n', { mode: 0o600 })
     } catch (error) {
       const teardownError = await this.#terminate(instance.id, launch, true).then(() => undefined, reason => reason as Error)
       throw combinedError('Failed to persist start state and terminate DSH', [error, teardownError])!
@@ -209,6 +238,7 @@ export class InstanceSupervisor {
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timed out waiting for DSH readiness output')), 20_000)),
       ])
       await confirmHealth(actualPort)
+      if (launchGate) await rm(launchGate, { force: true })
       if (launch.exited || this.#running.get(instance.id) !== launch || !processGroupAlive(launch.pid)) {
         throw new Error('DSH exited before its running state could be committed')
       }
@@ -227,6 +257,7 @@ export class InstanceSupervisor {
       return running
     } catch (error) {
       const teardownError = await this.#terminate(instance.id, launch, true).then(() => undefined, reason => reason as Error)
+      if (launchGate) await rm(launchGate, { force: true }).catch(() => undefined)
       throw combinedError('DSH launch failed', [error, teardownError])!
     }
   }
@@ -278,6 +309,11 @@ export class InstanceSupervisor {
     await Promise.allSettled(remaining.map(instance => this.stop(instance, true)))
     const survivors = active.filter(instance => this.isRunning(instance.id))
     if (survivors.length) throw new Error(`Could not stop instances: ${survivors.map(instance => instance.name).join(', ')}`)
+  }
+
+  async deleteLog(instanceId: string): Promise<void> {
+    if (this.#running.has(instanceId)) throw new Error('Cannot delete logs for a running instance')
+    await rm(join(this.#logsRoot, instanceId), { recursive: true, force: true })
   }
 
   async readLog(instanceId: string, maxBytes = 256 * 1024): Promise<InstanceLog> {

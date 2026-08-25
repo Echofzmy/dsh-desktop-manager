@@ -25,7 +25,7 @@ describe('StateStore', () => {
     })
 
     const disk = JSON.parse(await readFile(path, 'utf8')) as { version: number }
-    expect(disk.version).toBe(2)
+    expect(disk.version).toBe(3)
 
     const reloaded = new StateStore(path)
     await reloaded.load()
@@ -77,7 +77,8 @@ describe('StateStore', () => {
     expect(ambiguous).toMatchObject({ automaticPort: false, portModeReviewRequired: true })
     expect(known).toMatchObject({ automaticPort: true })
     expect(known?.portModeReviewRequired).toBeUndefined()
-    expect(JSON.parse(await readFile(path, 'utf8')).version).toBe(2)
+    expect(JSON.parse(await readFile(path, 'utf8')).version).toBe(3)
+    expect(store.snapshot().settings.defaultRuntimeId).toBe('runtime')
   })
 
   it('keeps the previous durable revision and recovers it when primary is corrupt', async () => {
@@ -101,7 +102,7 @@ describe('StateStore', () => {
     const recovered = new StateStore(path)
     await recovered.load()
     expect(recovered.snapshot().environments.map(environment => environment.id)).toEqual(['first'])
-    expect(JSON.parse(await readFile(path, 'utf8')).version).toBe(2)
+    expect(JSON.parse(await readFile(path, 'utf8')).version).toBe(3)
   })
 
   it('rejects a future primary version instead of loading an older backup', async () => {
@@ -111,7 +112,7 @@ describe('StateStore', () => {
     const store = new StateStore(path)
     await store.load()
     await store.update(() => undefined)
-    await writeFile(path, JSON.stringify({ version: 3, runtimes: [], environments: [], instances: [] }))
+    await writeFile(path, JSON.stringify({ version: 4, runtimes: [], environments: [], instances: [] }))
 
     await expect(new StateStore(path).load()).rejects.toThrow('newer than supported')
   })

@@ -1,301 +1,231 @@
 import {
   Activity,
+  Archive,
+  ArchiveRestore,
   Boxes,
+  Check,
   CircleStop,
   Copy,
   Database,
+  Download,
   ExternalLink,
   FileText,
   FolderOpen,
   Gauge,
+  Globe2,
   LayoutDashboard,
   Play,
   Plus,
   RefreshCw,
   RotateCw,
-  Settings,
+  Settings as SettingsIcon,
+  ShieldCheck,
   Sparkles,
   TerminalSquare,
+  Trash2,
+  Wrench,
   X,
 } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import type { EnvironmentRecord, InstanceRecord, ManagerSnapshot, RuntimeRecord } from '../../shared/types'
+import type { EnvironmentRecord, InstanceRecord, ManagerSnapshot, OfficialUpdateInfo, RuntimeRecord, RuntimeTaskKind } from '../../shared/types'
 
-const EMPTY: ManagerSnapshot = { runtimes: [], environments: [], instances: [] }
-type Page = { kind: 'home' } | { kind: 'settings' } | { kind: 'instance'; id: string }
-type Modal = 'runtime' | 'environment' | 'instance' | null
-
-const STATUS_LABEL: Record<InstanceRecord['status'], string> = {
-  stopped: '已停止',
-  starting: '启动中',
-  running: '运行中',
-  stopping: '停止中',
-  failed: '失败',
+const EMPTY: ManagerSnapshot = {
+  settings: { openMode: 'embedded', checkUpdatesOnStartup: true },
+  runtimes: [], environments: [], instances: [], tasks: [], backups: [], promotions: [], operations: [], templates: [],
 }
-const CHECK_LABEL: Record<string, string> = {
-  directory: '运行时目录',
-  manifest: 'DSH 清单',
-  node: 'Node.js',
-  pnpm: 'pnpm',
-  dependencies: '依赖',
-  build: '启动程序',
-  'web-build': 'Web 界面',
-  git: 'Git 版本',
-}
+type Page = { kind: 'home' } | { kind: 'runtimes' } | { kind: 'settings' } | { kind: 'instance'; id: string }
+type Modal = 'runtime' | 'worktree' | 'environment' | 'instance' | 'promotion' | null
+interface Confirmation { title: string; detail: string; actionLabel: string; action: () => Promise<unknown> }
+interface LogState { name: string; path: string; content: string; truncated: boolean }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
+const STATUS_LABEL: Record<InstanceRecord['status'], string> = { stopped: '已停止', starting: '启动中', running: '运行中', stopping: '停止中', failed: '失败' }
+const TASK_LABEL: Record<RuntimeTaskKind, string> = { install: '安装依赖', typecheck: '类型检查', test: '运行测试', build: '完整构建' }
+const CHECK_LABEL: Record<string, string> = { directory: '运行时目录', manifest: 'DSH 清单', node: '内置 Node.js', pnpm: 'pnpm', dependencies: '依赖', build: '启动程序', 'web-build': 'Web 界面', git: 'Git 版本' }
 
-function shortPath(path: string): string {
-  const home = path.match(/^\/Users\/[^/]+/u)?.[0]
-  return home ? path.replace(home, '~') : path
-}
+function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error) }
+function shortPath(path: string): string { const home = path.match(/^\/Users\/[^/]+/u)?.[0]; return home ? path.replace(home, '~') : path }
+function instanceStatusLabel(instance: InstanceRecord): string { return instance.interrupted || instance.portModeReviewRequired ? '需要确认' : STATUS_LABEL[instance.status] }
+function StatusDot({ status }: { status: InstanceRecord['status'] }): ReactNode { return <span className={`status-dot status-${status}`} aria-label={STATUS_LABEL[status]} /> }
 
-function instanceStatusLabel(instance: InstanceRecord): string {
-  return instance.interrupted || instance.portModeReviewRequired ? '需要确认' : STATUS_LABEL[instance.status]
+function IconButton({ label, children, onClick, disabled = false, danger = false }: { label: string; children: ReactNode; onClick: () => void; disabled?: boolean; danger?: boolean }): ReactNode {
+  return <button className={`icon-button${danger ? ' danger-icon' : ''}`} type="button" title={label} aria-label={label} onClick={onClick} disabled={disabled}>{children}</button>
 }
-
-function StatusDot({ status }: { status: InstanceRecord['status'] }): ReactNode {
-  return <span className={`status-dot status-${status}`} aria-label={STATUS_LABEL[status]} />
-}
-
-function IconButton({ label, children, onClick, disabled = false }: {
-  label: string
-  children: ReactNode
-  onClick: () => void
-  disabled?: boolean
-}): ReactNode {
-  return <button className="icon-button" type="button" title={label} aria-label={label} onClick={onClick} disabled={disabled}>{children}</button>
-}
-
 function Dialog({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }): ReactNode {
-  return <div className="modal-backdrop" role="presentation" onMouseDown={event => event.target === event.currentTarget && onClose()}>
-    <section className="dialog" role="dialog" aria-modal="true" aria-label={title}>
-      <header><h2>{title}</h2><IconButton label="关闭" onClick={onClose}><X size={18} /></IconButton></header>
-      {children}
-    </section>
-  </div>
+  return <div className="modal-backdrop" role="presentation" onMouseDown={event => event.target === event.currentTarget && onClose()}><section className="dialog" role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><IconButton label="关闭" onClick={onClose}><X size={18} /></IconButton></header>{children}</section></div>
 }
-
 function DirectoryField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }): ReactNode {
-  const choose = async (): Promise<void> => {
-    const selected = await window.manager.chooseDirectory()
-    if (selected) onChange(selected)
-  }
-  return <label className="field">
-    <span>{label}</span>
-    <span className="field-with-action"><input value={value} onChange={event => onChange(event.target.value)} required /><IconButton label={`选择${label}`} onClick={() => void choose()}><FolderOpen size={17} /></IconButton></span>
-  </label>
+  const choose = async (): Promise<void> => { const selected = await window.manager.chooseDirectory(); if (selected) onChange(selected) }
+  return <label className="field"><span>{label}</span><span className="field-with-action"><input value={value} onChange={event => onChange(event.target.value)} required /><IconButton label={`选择${label}`} onClick={() => void choose()}><FolderOpen size={17} /></IconButton></span></label>
 }
 
 export function App(): ReactNode {
   const [snapshot, setSnapshot] = useState(EMPTY)
   const [page, setPage] = useState<Page>({ kind: 'home' })
   const [modal, setModal] = useState<Modal>(null)
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null)
+  const [templateSource, setTemplateSource] = useState<string | null>(null)
+  const [templateUse, setTemplateUse] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [log, setLog] = useState<{ name: string; path: string; content: string; truncated: boolean } | null>(null)
+  const [log, setLog] = useState<LogState | null>(null)
 
-  useEffect(() => {
-    void window.manager.getSnapshot().then(setSnapshot).catch(reason => setError(errorText(reason)))
-    return window.manager.onSnapshotChanged(setSnapshot)
-  }, [])
-
+  useEffect(() => { void window.manager.getSnapshot().then(setSnapshot).catch(reason => setError(errorText(reason))); return window.manager.onSnapshotChanged(setSnapshot) }, [])
+  useEffect(() => window.manager.onMenuCommand(command => {
+    if (command === 'new-instance') setModal('instance')
+    else setPage({ kind: command })
+  }), [])
   const selectedInstance = page.kind === 'instance' ? snapshot.instances.find(instance => instance.id === page.id) : undefined
-  const navigate = (next: Page): void => {
-    if (next.kind !== 'instance') void window.manager.hideInstanceView()
-    setPage(next)
-  }
+  const navigate = (next: Page): void => { if (next.kind !== 'instance') void window.manager.hideInstanceView(); setPage(next) }
   const run = async (key: string, action: () => Promise<unknown>): Promise<void> => {
-    setBusy(key)
-    setError(null)
-    try {
-      await action()
-      setSnapshot(await window.manager.getSnapshot())
-    } catch (reason) {
-      setError(errorText(reason))
-    } finally {
-      setBusy(null)
-    }
+    setBusy(key); setError(null)
+    try { await action(); setSnapshot(await window.manager.getSnapshot()) } catch (reason) { setError(errorText(reason)) } finally { setBusy(null) }
   }
-  const showLog = async (instance: InstanceRecord): Promise<void> => {
-    await run(`log:${instance.id}`, async () => {
-      const result = await window.manager.readInstanceLog(instance.id)
-      setLog({ name: instance.name, ...result })
-    })
+  const confirm = (value: Confirmation): void => setConfirmation(value)
+  const showInstanceLog = async (instance: InstanceRecord): Promise<void> => {
+    await run(`log:${instance.id}`, async () => { const result = await window.manager.readInstanceLog(instance.id); setLog({ name: instance.name, ...result }) })
+  }
+  const showTaskLog = async (taskId: string, name: string): Promise<void> => {
+    await run(`task-log:${taskId}`, async () => { const result = await window.manager.readRuntimeTaskLog(taskId); setLog({ name, ...result }) })
   }
 
   return <div className={`app-shell ${log ? 'with-details' : ''}`}>
     <aside className="sidebar">
       <div className="drag-region" />
       <div className="brand-row"><span className="brand-mark"><Sparkles size={18} /></span><span><strong>DeepSeek</strong><small>DSH 管理器</small></span></div>
-      <button className="new-instance" onClick={() => setModal('instance')} disabled={!snapshot.runtimes.length}><Plus size={17} />新建实例</button>
+      <button className="new-instance" onClick={() => setModal('instance')} disabled={!snapshot.runtimes.length || !snapshot.environments.length}><Plus size={17} />新建实例</button>
       <nav className="sidebar-nav" aria-label="主导航">
         <button className={page.kind === 'home' ? 'active' : ''} onClick={() => navigate({ kind: 'home' })}><LayoutDashboard size={17} />概览</button>
-        <button className={page.kind === 'settings' ? 'active' : ''} onClick={() => navigate({ kind: 'settings' })}><Boxes size={17} />运行时</button>
+        <button className={page.kind === 'runtimes' ? 'active' : ''} onClick={() => navigate({ kind: 'runtimes' })}><Boxes size={17} />运行时</button>
       </nav>
-      <div className="sidebar-section">
-        <div className="sidebar-section-title"><span>实例</span><span>{snapshot.instances.length}</span></div>
-        <div className="sidebar-instances">
-          {snapshot.instances.length === 0 && <p>暂无实例</p>}
-          {snapshot.instances.map(instance => <button key={instance.id} className={page.kind === 'instance' && page.id === instance.id ? 'active' : ''} onClick={() => navigate({ kind: 'instance', id: instance.id })}><StatusDot status={instance.status} /><span><strong>{instance.name}</strong><small>{instanceStatusLabel(instance)}</small></span></button>)}
-        </div>
-      </div>
-      <button className="sidebar-settings" onClick={() => navigate({ kind: 'settings' })}><Settings size={17} /><span>设置</span></button>
+      <div className="sidebar-section"><div className="sidebar-section-title"><span>实例</span><span>{snapshot.instances.length}</span></div><div className="sidebar-instances">
+        {!snapshot.instances.length && <p>暂无实例</p>}
+        {snapshot.instances.map(instance => <button key={instance.id} className={page.kind === 'instance' && page.id === instance.id ? 'active' : ''} onClick={() => navigate({ kind: 'instance', id: instance.id })}><StatusDot status={instance.status} /><span><strong>{instance.name}</strong><small>{instanceStatusLabel(instance)}</small></span></button>)}
+      </div></div>
+      <button className={`sidebar-settings${page.kind === 'settings' ? ' active' : ''}`} onClick={() => navigate({ kind: 'settings' })}><SettingsIcon size={17} /><span>设置</span></button>
     </aside>
 
     <section className="workspace-shell">
       {error && <div className="error-banner"><span>{error}</span><IconButton label="关闭提示" onClick={() => setError(null)}><X size={16} /></IconButton></div>}
       <main className="main-content">
-        {page.kind === 'home' && <HomePage snapshot={snapshot} busy={busy} onModal={setModal} onOpen={id => navigate({ kind: 'instance', id })} onRun={run} onLog={showLog} />}
-        {page.kind === 'settings' && <SettingsPage snapshot={snapshot} busy={busy} onModal={setModal} onRun={run} />}
-        {page.kind === 'instance' && selectedInstance && <InstancePage instance={selectedInstance} snapshot={snapshot} busy={busy} obscured={modal !== null} onRun={run} onLog={showLog} onError={setError} />}
+        {page.kind === 'home' && <HomePage snapshot={snapshot} busy={busy} onModal={setModal} onOpen={id => navigate({ kind: 'instance', id })} onRun={run} onLog={showInstanceLog} onConfirm={confirm} onUseTemplate={setTemplateUse} />}
+        {page.kind === 'runtimes' && <RuntimesPage snapshot={snapshot} busy={busy} onModal={setModal} onRun={run} onLog={showTaskLog} onConfirm={confirm} onError={setError} />}
+        {page.kind === 'settings' && <SettingsPage snapshot={snapshot} busy={busy} onModal={setModal} onRun={run} onConfirm={confirm} />}
+        {page.kind === 'instance' && selectedInstance && <InstancePage instance={selectedInstance} snapshot={snapshot} busy={busy} obscured={modal !== null || confirmation !== null} onRun={run} onLog={showInstanceLog} onError={setError} onDelete={() => confirm({ title: '删除实例', detail: `删除“${selectedInstance.name}”的元数据和日志。生产环境数据不会被删除。`, actionLabel: '删除实例', action: async () => { await window.manager.deleteInstance(selectedInstance.id, false); navigate({ kind: 'home' }) } })} onSaveTemplate={() => setTemplateSource(selectedInstance.id)} />}
       </main>
     </section>
 
-    {modal === 'runtime' && <RuntimeDialog onClose={() => setModal(null)} onCreated={() => run('runtime:create', async () => { setModal(null) })} setError={setError} />}
+    {modal === 'runtime' && <RuntimeDialog onClose={() => setModal(null)} onCreated={() => run('runtime:create', async () => setModal(null))} setError={setError} />}
+    {modal === 'worktree' && <WorktreeDialog snapshot={snapshot} onClose={() => setModal(null)} onCreated={() => { setModal(null); void window.manager.getSnapshot().then(setSnapshot) }} setError={setError} />}
     {modal === 'environment' && <EnvironmentDialog snapshot={snapshot} onClose={() => setModal(null)} onCreated={() => { setModal(null); void window.manager.getSnapshot().then(setSnapshot) }} setError={setError} />}
     {modal === 'instance' && <InstanceDialog snapshot={snapshot} onClose={() => setModal(null)} onCreated={() => { setModal(null); void window.manager.getSnapshot().then(setSnapshot) }} setError={setError} />}
+    {modal === 'promotion' && <PromotionDialog snapshot={snapshot} onClose={() => setModal(null)} onCreated={() => { setModal(null); void window.manager.getSnapshot().then(setSnapshot) }} setError={setError} />}
+    {templateSource && <TemplateNameDialog title="保存实例模板" initialName={`${snapshot.instances.find(instance => instance.id === templateSource)?.name ?? '实例'} 模板`} submitLabel="保存模板" onClose={() => setTemplateSource(null)} onSubmit={name => window.manager.saveInstanceTemplate(templateSource, name)} onDone={() => setTemplateSource(null)} setError={setError} />}
+    {templateUse && <TemplateNameDialog title="从模板新建实例" initialName={snapshot.templates.find(template => template.id === templateUse)?.name ?? '新实例'} submitLabel="创建实例" onClose={() => setTemplateUse(null)} onSubmit={name => window.manager.createInstanceFromTemplate(templateUse, name)} onDone={() => setTemplateUse(null)} setError={setError} />}
+    {confirmation && <Dialog title={confirmation.title} onClose={() => setConfirmation(null)}><div className="confirm-content"><p>{confirmation.detail}</p><footer><button className="button outline" onClick={() => setConfirmation(null)}>取消</button><button className="button danger" disabled={busy !== null} onClick={() => void run('confirm', async () => { await confirmation.action(); setConfirmation(null) })}>{confirmation.actionLabel}</button></footer></div></Dialog>}
     {log && <LogPanel log={log} onClose={() => setLog(null)} />}
   </div>
 }
 
-function HomePage({ snapshot, busy, onModal, onOpen, onRun, onLog }: {
-  snapshot: ManagerSnapshot
-  busy: string | null
-  onModal: (modal: Modal) => void
-  onOpen: (id: string) => void
-  onRun: (key: string, action: () => Promise<unknown>) => Promise<void>
-  onLog: (instance: InstanceRecord) => Promise<void>
-}): ReactNode {
+function HomePage({ snapshot, busy, onModal, onOpen, onRun, onLog, onConfirm, onUseTemplate }: { snapshot: ManagerSnapshot; busy: string | null; onModal: (modal: Modal) => void; onOpen: (id: string) => void; onRun: Runner; onLog: (instance: InstanceRecord) => Promise<void>; onConfirm: (confirmation: Confirmation) => void; onUseTemplate: (id: string) => void }): ReactNode {
   const running = snapshot.instances.filter(instance => instance.status === 'running').length
-  return <div className="page">
-    <header className="page-heading"><div><h1>概览</h1><p>{running} 个实例正在运行，{snapshot.environments.length} 个环境可用</p></div><button className="button primary" onClick={() => onModal('instance')} disabled={!snapshot.runtimes.length}><Plus size={16} />新建实例</button></header>
-    <section className="content-section">
-      <div className="section-heading"><div><h2>实例</h2><p>管理本机 DSH 进程与工作区</p></div></div>
-      {snapshot.instances.length === 0 ? <EmptyState icon={<TerminalSquare size={22} />} title="暂无实例" detail="先注册运行时并创建独立环境。" action={<button className="button primary" onClick={() => onModal(snapshot.runtimes.length ? 'instance' : 'runtime')}><Plus size={16} />{snapshot.runtimes.length ? '新建实例' : '注册运行时'}</button>} /> : <div className="row-list">{snapshot.instances.map(instance => <InstanceRow key={instance.id} instance={instance} snapshot={snapshot} busy={busy} onOpen={onOpen} onRun={onRun} onLog={onLog} />)}</div>}
-    </section>
-    <div className="overview-grid">
-      <section className="content-section"><div className="section-heading"><div><h2>运行时</h2><p>本地 DSH 版本与预检状态</p></div><IconButton label="注册运行时" onClick={() => onModal('runtime')}><Plus size={17} /></IconButton></div><RuntimeRows runtimes={snapshot.runtimes} busy={busy} onRun={onRun} /></section>
-      <section className="content-section"><div className="section-heading"><div><h2>环境</h2><p>相互独立的 DSH_HOME</p></div><IconButton label="创建环境" onClick={() => onModal('environment')}><Plus size={17} /></IconButton></div><EnvironmentRows environments={snapshot.environments} snapshot={snapshot} /></section>
-    </div>
+  const production = snapshot.instances.find(instance => instance.id === snapshot.settings.productionInstanceId) ?? snapshot.instances.find(instance => snapshot.environments.find(environment => environment.id === instance.environmentId)?.kind === 'production')
+  const activePromotion = snapshot.promotions.find(item => item.status === 'awaiting-confirmation' && item.productionInstanceId === production?.id)
+  const rollbackPoint = activePromotion ?? [...snapshot.promotions].reverse().find(item => item.status === 'committed' && item.productionInstanceId === production?.id)
+  return <div className="page"><header className="page-heading"><div><h1>概览</h1><p>{running} 个实例正在运行，{snapshot.environments.length} 个环境可用</p></div><button className="button primary" onClick={() => onModal('instance')} disabled={!snapshot.runtimes.length || !snapshot.environments.length}><Plus size={16} />新建实例</button></header>
+    {(production || rollbackPoint) && <section className="content-section production-section"><div className="section-heading"><div><h2>生产</h2><p>运行版本与完整环境同步提升或回退</p></div><button className="button outline small" onClick={() => onModal('promotion')}><ShieldCheck size={15} />提升候选版本</button></div>{production && <div className="production-row"><span className="environment-icon"><ShieldCheck size={17} /></span><span className="grow"><strong>{production.name}</strong><small>{snapshot.runtimes.find(runtime => runtime.id === production.runtimeId)?.name} · {instanceStatusLabel(production)}</small></span>{activePromotion && <button className="button primary small" disabled={busy !== null} onClick={() => void onRun(`confirm:${activePromotion.id}`, () => window.manager.confirmPromotion(activePromotion.id))}><Check size={15} />确认生产正常</button>}{rollbackPoint && <button className="button outline small" disabled={busy !== null} onClick={() => onConfirm({ title: '回退生产版本', detail: '将停止生产实例，同时恢复上一运行版本与提升前的完整 DSH_HOME。当前故障环境会保留在诊断目录。', actionLabel: '执行回退', action: () => window.manager.rollbackPromotion(rollbackPoint.id) })}><ArchiveRestore size={15} />回退</button>}{rollbackPoint?.status === 'committed' && <IconButton danger label="放弃回退点" onClick={() => onConfirm({ title: '放弃生产回退点', detail: '此操作不会删除备份，但会解除旧运行时和生产实例的回退保护，且不能撤销。', actionLabel: '放弃回退点', action: () => window.manager.dismissPromotion(rollbackPoint.id) })}><Trash2 size={15} /></IconButton>}</div>}</section>}
+    <section className="content-section"><div className="section-heading"><div><h2>实例</h2><p>管理本机 DSH 进程与工作区</p></div></div>{!snapshot.instances.length ? <EmptyState icon={<TerminalSquare size={22} />} title="暂无实例" detail="先准备运行时与独立环境。" action={<button className="button primary" onClick={() => onModal(snapshot.runtimes.length ? 'environment' : 'runtime')}><Plus size={16} />{snapshot.runtimes.length ? '创建环境' : '注册运行时'}</button>} /> : <div className="row-list">{snapshot.instances.map(instance => <InstanceRow key={instance.id} instance={instance} snapshot={snapshot} busy={busy} onOpen={onOpen} onRun={onRun} onLog={onLog} />)}</div>}</section>
+    {!!snapshot.templates.length && <section className="content-section"><div className="section-heading"><div><h2>实例模板</h2><p>用固定运行时与工作区快速创建独立实例</p></div></div><div className="compact-list">{snapshot.templates.map(template => <div className="compact-row" key={template.id}><span className="environment-icon"><Copy size={16} /></span><span className="grow"><strong>{template.name}</strong><small>{snapshot.runtimes.find(runtime => runtime.id === template.runtimeId)?.name ?? '运行时缺失'} · {template.environmentMode === 'new-isolated' ? '创建新环境' : '使用生产环境'}</small></span><button className="button outline small" onClick={() => onUseTemplate(template.id)}><Plus size={14} />创建实例</button><IconButton danger label="删除模板" onClick={() => onConfirm({ title: '删除实例模板', detail: '只删除模板，不影响已创建的实例、运行时或环境。', actionLabel: '删除模板', action: () => window.manager.deleteInstanceTemplate(template.id) })}><Trash2 size={15} /></IconButton></div>)}</div></section>}
+    <div className="overview-grid"><section className="content-section"><div className="section-heading"><div><h2>运行时</h2><p>官方与本地 DSH 版本</p></div></div><RuntimeRows snapshot={snapshot} busy={busy} onRun={onRun} /></section><section className="content-section"><div className="section-heading"><div><h2>环境</h2><p>相互独立的 DSH_HOME</p></div><IconButton label="创建环境" onClick={() => onModal('environment')}><Plus size={17} /></IconButton></div><EnvironmentRows environments={snapshot.environments} snapshot={snapshot} /></section></div>
   </div>
 }
-
-function InstanceRow({ instance, snapshot, busy, onOpen, onRun, onLog }: {
-  instance: InstanceRecord
-  snapshot: ManagerSnapshot
-  busy: string | null
-  onOpen: (id: string) => void
-  onRun: (key: string, action: () => Promise<unknown>) => Promise<void>
-  onLog: (instance: InstanceRecord) => Promise<void>
-}): ReactNode {
-  const runtime = snapshot.runtimes.find(item => item.id === instance.runtimeId)
-  const environment = snapshot.environments.find(item => item.id === instance.environmentId)
-  const working = busy?.endsWith(instance.id) === true
-  const active = ['starting', 'running', 'stopping'].includes(instance.status)
-  const needsRecovery = instance.interrupted || instance.portModeReviewRequired
-  return <article className="instance-row">
-    <button className="instance-main" onClick={() => onOpen(instance.id)}><span className="instance-identity"><StatusDot status={instance.status} /><span><strong>{instance.name}</strong><small>{runtime?.name ?? '运行时缺失'} · {environment?.name ?? '环境缺失'}</small></span></span><span className="instance-meta"><span>{instance.port ? `${instance.automaticPort ? '自动 · ' : ''}:${instance.port}` : '自动端口'}</span><span title={instance.workspacePath}>{shortPath(instance.workspacePath)}</span></span></button>
-    <div className="row-actions">{needsRecovery ? <button className="button outline small" onClick={() => onOpen(instance.id)}>确认恢复</button> : active ? <IconButton label={instance.status === 'stopping' ? '强制停止' : '停止'} disabled={working} onClick={() => void onRun(`stop:${instance.id}`, () => window.manager.stopInstance(instance.id, instance.status === 'stopping'))}><CircleStop size={17} /></IconButton> : <IconButton label="启动" disabled={working} onClick={() => void onRun(`start:${instance.id}`, () => window.manager.startInstance(instance.id))}><Play size={17} /></IconButton>}<IconButton label="重新启动" disabled={working || instance.status !== 'running' || Boolean(needsRecovery)} onClick={() => void onRun(`restart:${instance.id}`, () => window.manager.restartInstance(instance.id))}><RotateCw size={17} /></IconButton><IconButton label="查看日志" onClick={() => void onLog(instance)}><FileText size={17} /></IconButton></div>
-  </article>
+type Runner = (key: string, action: () => Promise<unknown>) => Promise<void>
+function InstanceRow({ instance, snapshot, busy, onOpen, onRun, onLog }: { instance: InstanceRecord; snapshot: ManagerSnapshot; busy: string | null; onOpen: (id: string) => void; onRun: Runner; onLog: (instance: InstanceRecord) => Promise<void> }): ReactNode {
+  const runtime = snapshot.runtimes.find(item => item.id === instance.runtimeId); const environment = snapshot.environments.find(item => item.id === instance.environmentId); const active = ['starting', 'running', 'stopping'].includes(instance.status); const recovery = instance.interrupted || instance.portModeReviewRequired
+  return <article className="instance-row"><button className="instance-main" onClick={() => onOpen(instance.id)}><span className="instance-identity"><StatusDot status={instance.status} /><span><strong>{instance.name}</strong><small>{runtime?.name ?? '运行时缺失'} · {environment?.name ?? '环境缺失'}</small></span></span><span className="instance-meta"><span>{instance.port ? `${instance.automaticPort ? '自动 · ' : ''}:${instance.port}` : '自动端口'}</span><span title={instance.workspacePath}>{shortPath(instance.workspacePath)}</span></span></button><div className="row-actions">{recovery ? <button className="button outline small" onClick={() => onOpen(instance.id)}>确认恢复</button> : active ? <IconButton label={instance.status === 'stopping' ? '强制停止' : '停止'} disabled={busy !== null} onClick={() => void onRun(`stop:${instance.id}`, () => window.manager.stopInstance(instance.id, instance.status === 'stopping'))}><CircleStop size={17} /></IconButton> : <IconButton label="启动" disabled={busy !== null} onClick={() => void onRun(`start:${instance.id}`, () => window.manager.startInstance(instance.id))}><Play size={17} /></IconButton>}<IconButton label="重新启动" disabled={busy !== null || instance.status !== 'running' || Boolean(recovery)} onClick={() => void onRun(`restart:${instance.id}`, () => window.manager.restartInstance(instance.id))}><RotateCw size={17} /></IconButton><IconButton label="查看日志" onClick={() => void onLog(instance)}><FileText size={17} /></IconButton></div></article>
 }
-
-function RuntimeRows({ runtimes, busy, onRun }: { runtimes: RuntimeRecord[]; busy: string | null; onRun: (key: string, action: () => Promise<unknown>) => Promise<void> }): ReactNode {
-  if (!runtimes.length) return <p className="empty-inline">暂无已注册的运行时</p>
-  return <div className="compact-list">{runtimes.map(runtime => <div className="compact-row" key={runtime.id}><span className={`check-mark ${runtime.preflight.ready ? 'pass' : 'failure'}`}><Gauge size={16} /></span><span className="grow"><strong>{runtime.name}</strong><small>{runtime.preflight.packageVersion ?? '版本未知'} · {runtime.preflight.ready ? '预检通过' : `${runtime.preflight.checks.filter(check => check.level === 'failure').length} 项受阻`}</small></span><IconButton label="重新预检" disabled={busy === `refresh:${runtime.id}`} onClick={() => void onRun(`refresh:${runtime.id}`, () => window.manager.refreshRuntime(runtime.id))}><RefreshCw size={16} /></IconButton></div>)}</div>
+function RuntimeRows({ snapshot, busy, onRun }: { snapshot: ManagerSnapshot; busy: string | null; onRun: Runner }): ReactNode {
+  if (!snapshot.runtimes.length) return <p className="empty-inline">暂无已注册的运行时</p>
+  return <div className="compact-list">{snapshot.runtimes.map(runtime => <div className="compact-row" key={runtime.id}><span className={`check-mark ${runtime.preflight.ready && !runtime.taskBlocked ? 'pass' : 'failure'}`}><Gauge size={16} /></span><span className="grow"><strong>{runtime.name}{snapshot.settings.defaultRuntimeId === runtime.id ? ' · 默认' : ''}</strong><small>{runtime.version ?? runtime.preflight.packageVersion ?? '版本未知'} · {runtime.preflight.ready && !runtime.taskBlocked ? '可启动' : '受阻'}</small></span><IconButton label="重新预检" disabled={busy === `refresh:${runtime.id}`} onClick={() => void onRun(`refresh:${runtime.id}`, () => window.manager.refreshRuntime(runtime.id))}><RefreshCw size={16} /></IconButton></div>)}</div>
 }
-
 function EnvironmentRows({ environments, snapshot }: { environments: EnvironmentRecord[]; snapshot: ManagerSnapshot }): ReactNode {
   if (!environments.length) return <p className="empty-inline">暂无环境</p>
-  return <div className="compact-list">{environments.map(environment => {
-    const occupant = snapshot.instances.find(instance => instance.environmentId === environment.id && instance.status === 'running')
-    return <div className="compact-row" key={environment.id}><span className="environment-icon"><Database size={16} /></span><span className="grow"><strong>{environment.name}</strong><small>{environment.kind === 'production' ? '生产环境' : environment.kind === 'clone' ? '克隆环境' : '独立环境'}{environment.lineage ? ' · 已记录来源' : ''}</small></span><span className={`availability ${occupant ? 'occupied' : ''}`}>{occupant ? occupant.name : '可用'}</span></div>
-  })}</div>
+  return <div className="compact-list">{environments.map(environment => { const occupant = snapshot.instances.find(instance => instance.environmentId === environment.id && instance.status === 'running'); return <div className="compact-row" key={environment.id}><span className="environment-icon"><Database size={16} /></span><span className="grow"><strong>{environment.name}</strong><small>{environment.kind === 'production' ? '生产环境' : environment.kind === 'clone' ? '克隆环境' : '独立环境'}{environment.lineage ? ' · 已记录来源' : ''}</small></span><span className={`availability ${occupant ? 'occupied' : ''}`}>{occupant ? occupant.name : '可用'}</span></div> })}</div>
 }
 
-function SettingsPage({ snapshot, busy, onModal, onRun }: { snapshot: ManagerSnapshot; busy: string | null; onModal: (modal: Modal) => void; onRun: (key: string, action: () => Promise<unknown>) => Promise<void> }): ReactNode {
-  return <div className="page narrow-page"><header className="page-heading"><div><h1>运行时</h1><p>注册本地源码目录或已发布的 DSH 包</p></div><button className="button primary" onClick={() => onModal('runtime')}><Plus size={16} />注册运行时</button></header>
-    <section className="content-section">{snapshot.runtimes.length === 0 ? <EmptyState icon={<Boxes size={22} />} title="暂无运行时" detail="注册一个 DSH 目录后，管理器会检查工具链与构建产物。" action={<button className="button primary" onClick={() => onModal('runtime')}><Plus size={16} />注册运行时</button>} /> : <div className="runtime-list">{snapshot.runtimes.map(runtime => <article className="runtime-detail" key={runtime.id}><header><div><h3>{runtime.name}</h3><p>{shortPath(runtime.path)}</p></div><span className={`preflight-badge ${runtime.preflight.ready ? 'ready' : 'blocked'}`}>{runtime.preflight.ready ? '预检通过' : '预检受阻'}</span></header><div className="checks">{runtime.preflight.checks.map(check => <div className="check-row" key={check.id}><span className={`check-dot ${check.level}`} /><span><strong>{CHECK_LABEL[check.id] ?? check.label}</strong><small>{check.detail}</small>{check.remediation && <em>{check.remediation}</em>}</span></div>)}</div><footer><span>检查于 {new Date(runtime.preflight.checkedAt).toLocaleString('zh-CN')}</span><button className="button outline small" disabled={busy === `refresh:${runtime.id}`} onClick={() => void onRun(`refresh:${runtime.id}`, () => window.manager.refreshRuntime(runtime.id))}><RefreshCw size={15} />重新预检</button></footer></article>)}</div>}</section>
+function RuntimesPage({ snapshot, busy, onModal, onRun, onLog, onConfirm, onError }: { snapshot: ManagerSnapshot; busy: string | null; onModal: (modal: Modal) => void; onRun: Runner; onLog: (taskId: string, name: string) => Promise<void>; onConfirm: (confirmation: Confirmation) => void; onError: (value: string | null) => void }): ReactNode {
+  const [update, setUpdate] = useState<OfficialUpdateInfo | null>(null)
+  const check = async (): Promise<void> => { try { onError(null); setUpdate(await window.manager.checkOfficialUpdate('stable')) } catch (error) { onError(errorText(error)) } }
+  useEffect(() => { if (snapshot.settings.checkUpdatesOnStartup) void check() }, [])
+  const installing = snapshot.operations.find(operation => operation.type === 'runtime-install' && (operation.status === 'prepared' || operation.status === 'running'))
+  return <div className="page narrow-page"><header className="page-heading"><div><h1>运行时</h1><p>官方版本、源码构建与启动门禁</p></div><div className="heading-actions"><button className="button outline" onClick={() => void check()}><RefreshCw size={16} />检查更新</button><button className="button outline" disabled={!snapshot.runtimes.some(runtime => runtime.source === 'local')} onClick={() => onModal('worktree')}><Copy size={16} />创建工作树</button><button className="button primary" onClick={() => onModal('runtime')}><Plus size={16} />注册本地运行时</button></div></header>
+    <section className="content-section official-update"><div className="section-heading"><div><h2>官方 DSH</h2><p>固定来源 registry.npmjs.org，安装完整依赖并校验 integrity</p></div></div>{update ? <div className="official-row"><span className="brand-mark"><Download size={17} /></span><span className="grow"><strong>DSH {update.version}</strong><small>{update.installed ? '已安装' : `可安装${update.unpackedSize ? ` · 入口包 ${Math.ceil(update.unpackedSize / 1024)} KiB` : ''}`}</small></span>{!update.installed && <button className="button primary small" disabled={Boolean(installing)} onClick={() => void onRun(`install:${update.version}`, () => window.manager.installOfficialRuntime({ version: update.version }))}><Download size={15} />安装</button>}</div> : <p className="empty-inline">点击“检查更新”获取官方版本信息</p>}{installing && <div className="operation-progress"><Activity size={16} /><span><strong>正在安装 {String(installing.input.version)}</strong><small>{String(installing.input.detail ?? installing.phase)}</small></span><button className="button outline small" onClick={() => void onRun(`cancel:${installing.id}`, () => window.manager.cancelRuntimeInstall(installing.id))}>取消</button></div>}</section>
+    <section className="content-section">{!snapshot.runtimes.length ? <EmptyState icon={<Boxes size={22} />} title="暂无运行时" detail="可以安装官方版本，或注册本地 DSH 源码目录。" action={<button className="button primary" onClick={() => onModal('runtime')}><Plus size={16} />注册运行时</button>} /> : <div className="runtime-list">{snapshot.runtimes.map(runtime => {
+      const tasks = snapshot.tasks.filter(task => task.runtimeId === runtime.id).slice(-3).reverse(); const activeTask = tasks.find(task => task.status === 'prepared' || task.status === 'running')
+      return <article className="runtime-detail" key={runtime.id}><header><div><h3>{runtime.name}{snapshot.settings.defaultRuntimeId === runtime.id && <span className="inline-badge">默认</span>}</h3><p>{shortPath(runtime.path)}</p></div><span className={`preflight-badge ${runtime.preflight.ready && !runtime.taskBlocked ? 'ready' : 'blocked'}`}>{runtime.preflight.ready && !runtime.taskBlocked ? '可以启动' : '启动受阻'}</span></header>
+        <div className="runtime-meta"><span>{runtime.source === 'bundled' ? '内置官方' : runtime.source === 'downloaded' ? '已下载官方' : '本地源码'}</span><span>{runtime.version ?? runtime.preflight.packageVersion ?? '版本未知'}</span>{runtime.preflight.gitCommit && <span>{runtime.preflight.gitCommit.slice(0, 10)}{runtime.preflight.gitDirty ? ' · 有修改' : ' · 干净'}</span>}</div>
+        {runtime.taskBlocked && <p className="validation-note">{runtime.taskBlocked}</p>}
+        <div className="checks">{runtime.preflight.checks.map(check => <div className="check-row" key={check.id}><span className={`check-dot ${check.level}`} /><span><strong>{CHECK_LABEL[check.id] ?? check.label}</strong><small>{check.detail}</small>{check.remediation && <em>{check.remediation}</em>}</span></div>)}</div>
+        {runtime.source === 'local' && !runtime.immutable && <div className="task-toolbar">{(['install', 'typecheck', 'test', 'build'] as const).map(kind => <button className="button outline small" key={kind} disabled={Boolean(activeTask) || busy !== null} onClick={() => void onRun(`task:${runtime.id}:${kind}`, () => window.manager.startRuntimeTask(runtime.id, kind))}><Wrench size={14} />{TASK_LABEL[kind]}</button>)}</div>}
+        {!!tasks.length && <div className="task-list">{tasks.map(task => <div key={task.id}><span className={`task-status ${task.status}`}>{TASK_LABEL[task.kind]} · {task.status === 'succeeded' ? '成功' : task.status === 'running' ? '运行中' : task.status === 'prepared' ? '准备中' : task.status === 'cancelled' ? '已取消' : task.status === 'interrupted' ? '已中断' : '失败'}</span><span className="row-actions"><IconButton label="任务日志" onClick={() => void onLog(task.id, `${runtime.name} · ${TASK_LABEL[task.kind]}`)}><FileText size={15} /></IconButton>{(task.status === 'prepared' || task.status === 'running') && <button className="button outline small" onClick={() => void onRun(`task-cancel:${task.id}`, () => window.manager.cancelRuntimeTask(task.id))}>取消</button>}</span></div>)}</div>}
+        <footer><span>检查于 {new Date(runtime.preflight.checkedAt).toLocaleString('zh-CN')}</span><div className="row-actions">{snapshot.settings.defaultRuntimeId !== runtime.id && <button className="button outline small" onClick={() => void onRun(`default:${runtime.id}`, () => window.manager.setDefaultRuntime(runtime.id))}><Check size={15} />设为默认</button>}<button className="button outline small" onClick={() => void onRun(`refresh:${runtime.id}`, () => window.manager.refreshRuntime(runtime.id))}><RefreshCw size={15} />重新预检</button>{runtime.source !== 'bundled' && <IconButton danger label={runtime.source === 'local' ? '注销运行时' : '删除运行时'} onClick={() => onConfirm({ title: runtime.source === 'local' ? '注销本地运行时' : '删除官方运行时', detail: runtime.source === 'local' ? '只移除管理器记录，不会删除源码目录。仍被实例或回退记录引用时会拒绝操作。' : '删除管理器下载的完整运行时目录。仍被实例或回退记录引用时会拒绝操作。', actionLabel: runtime.source === 'local' ? '注销' : '删除', action: () => window.manager.deleteRuntime(runtime.id) })}><Trash2 size={16} /></IconButton>}</div></footer>
+      </article> })}</div>}</section>
   </div>
 }
 
-function InstancePage({ instance, snapshot, busy, obscured, onRun, onLog, onError }: { instance: InstanceRecord; snapshot: ManagerSnapshot; busy: string | null; obscured: boolean; onRun: (key: string, action: () => Promise<unknown>) => Promise<void>; onLog: (instance: InstanceRecord) => Promise<void>; onError: (error: string | null) => void }): ReactNode {
-  const host = useRef<HTMLDivElement>(null)
-  const runtime = snapshot.runtimes.find(item => item.id === instance.runtimeId)
-  const environment = snapshot.environments.find(item => item.id === instance.environmentId)
+function SettingsPage({ snapshot, busy, onModal, onRun, onConfirm }: { snapshot: ManagerSnapshot; busy: string | null; onModal: (modal: Modal) => void; onRun: Runner; onConfirm: (confirmation: Confirmation) => void }): ReactNode {
+  return <div className="page settings-page"><header className="page-heading"><div><h1>设置</h1><p>管理器偏好、环境数据与备份</p></div></header><div className="settings-layout"><nav className="settings-index"><a href="#general">通用</a><a href="#environments">环境</a><a href="#backups">备份</a></nav><div className="settings-content">
+    <section id="general" className="settings-section"><h2>通用</h2><label className="setting-row"><span><strong>实例打开方式</strong><small>默认嵌入管理器或在系统浏览器中打开</small></span><select value={snapshot.settings.openMode} onChange={event => void onRun('setting:open', () => window.manager.updateSettings({ openMode: event.target.value as 'embedded' | 'external' }))}><option value="embedded">嵌入管理器</option><option value="external">系统浏览器</option></select></label><label className="setting-row"><span><strong>启动时检查官方更新</strong><small>只读取固定 npm registry 的版本元数据</small></span><input type="checkbox" checked={snapshot.settings.checkUpdatesOnStartup} onChange={event => void onRun('setting:update', () => window.manager.updateSettings({ checkUpdatesOnStartup: event.target.checked }))} /></label><div className="setting-row"><span><strong>默认运行时</strong><small>只影响新建实例，不改动已有实例</small></span><select value={snapshot.settings.defaultRuntimeId ?? ''} onChange={event => void onRun('setting:default', () => window.manager.setDefaultRuntime(event.target.value))}><option value="" disabled>未设置</option>{snapshot.runtimes.map(runtime => <option value={runtime.id} key={runtime.id}>{runtime.name}</option>)}</select></div></section>
+    <section id="environments" className="settings-section"><div className="section-heading"><div><h2>环境</h2><p>生产数据只允许注销，绝不由管理器删除</p></div><button className="button outline small" onClick={() => onModal('environment')}><Plus size={15} />创建环境</button></div><div className="management-list">{snapshot.environments.map(environment => { const references = snapshot.instances.filter(instance => instance.environmentId === environment.id).length; return <div className="management-row" key={environment.id}><span className="environment-icon"><Database size={16} /></span><span className="grow"><strong>{environment.name}</strong><small>{shortPath(environment.path)} · {references} 个实例引用</small></span><IconButton label="创建完整备份" disabled={busy !== null} onClick={() => void onRun(`backup:${environment.id}`, () => window.manager.createEnvironmentBackup(environment.id))}><Archive size={16} /></IconButton><IconButton danger label={environment.kind === 'production' ? '注销环境' : '删除环境'} disabled={references > 0} onClick={() => onConfirm({ title: environment.kind === 'production' ? '注销生产环境' : '删除环境', detail: environment.kind === 'production' ? '只移除管理器记录，不会删除磁盘上的 DSH_HOME。' : '删除管理器记录以及受管环境目录。此操作不会删除备份。', actionLabel: environment.kind === 'production' ? '注销' : '删除', action: () => window.manager.deleteEnvironment(environment.id, true) })}><Trash2 size={16} /></IconButton></div> })}</div></section>
+    <section id="backups" className="settings-section"><h2>备份</h2>{!snapshot.backups.length ? <p className="empty-inline">暂无完整环境备份</p> : <div className="management-list">{snapshot.backups.slice().reverse().map(backup => <div className="management-row" key={backup.id}><span className="environment-icon"><Archive size={16} /></span><span className="grow"><strong>{snapshot.environments.find(environment => environment.id === backup.environmentId)?.name ?? '历史环境'}</strong><small>{new Date(backup.createdAt).toLocaleString('zh-CN')} · 已生成 SHA-256 清单</small></span><span className="availability">{backup.status === 'ready' ? '可用' : '失败'}</span></div>)}</div>}</section>
+  </div></div></div>
+}
+
+function InstancePage({ instance, snapshot, busy, obscured, onRun, onLog, onError, onDelete, onSaveTemplate }: { instance: InstanceRecord; snapshot: ManagerSnapshot; busy: string | null; obscured: boolean; onRun: Runner; onLog: (instance: InstanceRecord) => Promise<void>; onError: (error: string | null) => void; onDelete: () => void; onSaveTemplate: () => void }): ReactNode {
+  const host = useRef<HTMLDivElement>(null); const externalOpened = useRef(''); const runtime = snapshot.runtimes.find(item => item.id === instance.runtimeId); const environment = snapshot.environments.find(item => item.id === instance.environmentId)
   useLayoutEffect(() => {
     const element = host.current
-    if (!element || instance.status !== 'running' || obscured) { void window.manager.hideInstanceView(); return }
-    const update = (): void => {
-      const rect = element.getBoundingClientRect()
-      void window.manager.showInstanceView(instance.id, { x: rect.x, y: rect.y, width: rect.width, height: rect.height }).catch(reason => onError(errorText(reason)))
+    if (!element || instance.status !== 'running' || obscured || snapshot.settings.openMode === 'external') {
+      void window.manager.hideInstanceView()
+      if (instance.status === 'running' && snapshot.settings.openMode === 'external') { const key = `${instance.id}:${instance.port}`; if (externalOpened.current !== key) { externalOpened.current = key; void window.manager.openExternal(instance.id).catch(reason => onError(errorText(reason))) } }
+      return
     }
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(element)
-    window.addEventListener('resize', update)
-    return () => { observer.disconnect(); window.removeEventListener('resize', update); void window.manager.hideInstanceView() }
-  }, [instance.id, instance.status, instance.port, obscured, onError])
-  const active = ['starting', 'running', 'stopping'].includes(instance.status)
-  const needsRecovery = Boolean(instance.interrupted || instance.portModeReviewRequired)
-  const recover = (automaticPort: boolean): void => {
-    void onRun(`recover:${instance.id}`, () => window.manager.recoverInstance(instance.id, automaticPort))
-  }
-
-  return <div className="instance-page">
-    <header className="instance-toolbar">
-      <div className="instance-title"><StatusDot status={instance.status} /><span><strong>{instance.name}</strong><small>{runtime?.name} · {environment?.name} · {instance.port ? `127.0.0.1:${instance.port}` : '自动端口'}</small></span></div>
-      <span className="workspace-label" title={instance.workspacePath}>{shortPath(instance.workspacePath)}</span>
-      <div className="toolbar-actions">
-        <IconButton label="查看日志" onClick={() => void onLog(instance)}><FileText size={17} /></IconButton>
-        {!needsRecovery && <><IconButton label="在浏览器中打开" disabled={instance.status !== 'running'} onClick={() => void window.manager.openExternal(instance.id)}><ExternalLink size={17} /></IconButton><IconButton label="重新启动" disabled={instance.status !== 'running' || busy !== null} onClick={() => void onRun(`restart:${instance.id}`, () => window.manager.restartInstance(instance.id))}><RotateCw size={17} /></IconButton>{active ? <button className="button outline danger" onClick={() => void onRun(`stop:${instance.id}`, () => window.manager.stopInstance(instance.id, instance.status === 'stopping'))}><CircleStop size={16} />{instance.status === 'stopping' ? '强制停止' : '停止'}</button> : <button className="button primary" onClick={() => void onRun(`start:${instance.id}`, () => window.manager.startInstance(instance.id))}><Play size={16} />启动</button>}</>}
-      </div>
-    </header>
-    <div className={`web-host ${instance.status !== 'running' ? 'inactive' : ''}`} ref={host}>
-      {instance.status !== 'running' && <div><TerminalSquare size={28} /><strong>{instanceStatusLabel(instance)}</strong><span>{instance.lastError ?? '启动实例后将在这里打开 DSH 界面。'}</span>{needsRecovery && <div className="recovery-actions"><button className="button primary" disabled={busy !== null} onClick={() => recover(true)}>确认已停止，使用自动端口</button><button className="button outline" disabled={busy !== null || instance.port <= 0} onClick={() => recover(false)}>确认已停止，保留端口 {instance.port || ''}</button></div>}</div>}
-    </div>
-  </div>
+    const update = (): void => { const rect = element.getBoundingClientRect(); void window.manager.showInstanceView(instance.id, { x: rect.x, y: rect.y, width: rect.width, height: rect.height }).catch(reason => onError(errorText(reason))) }
+    update(); const observer = new ResizeObserver(update); observer.observe(element); window.addEventListener('resize', update); return () => { observer.disconnect(); window.removeEventListener('resize', update); void window.manager.hideInstanceView() }
+  }, [instance.id, instance.status, instance.port, obscured, snapshot.settings.openMode, onError])
+  const active = ['starting', 'running', 'stopping'].includes(instance.status); const recovery = Boolean(instance.interrupted || instance.portModeReviewRequired); const recover = (automaticPort: boolean): void => { void onRun(`recover:${instance.id}`, () => window.manager.recoverInstance(instance.id, automaticPort)) }
+  return <div className="instance-page"><header className="instance-toolbar"><div className="instance-title"><StatusDot status={instance.status} /><span><strong>{instance.name}</strong><small>{runtime?.name} · {environment?.name} · {instance.port ? `127.0.0.1:${instance.port}` : '自动端口'}</small></span></div><span className="workspace-label" title={instance.workspacePath}>{shortPath(instance.workspacePath)}</span><div className="toolbar-actions"><IconButton label="查看日志" onClick={() => void onLog(instance)}><FileText size={17} /></IconButton><IconButton label="保存为模板" onClick={onSaveTemplate}><Copy size={17} /></IconButton><IconButton danger label="删除实例" disabled={active} onClick={onDelete}><Trash2 size={17} /></IconButton>{!recovery && <><IconButton label="在浏览器中打开" disabled={instance.status !== 'running'} onClick={() => void window.manager.openExternal(instance.id)}><ExternalLink size={17} /></IconButton><IconButton label="重新启动" disabled={instance.status !== 'running' || busy !== null} onClick={() => void onRun(`restart:${instance.id}`, () => window.manager.restartInstance(instance.id))}><RotateCw size={17} /></IconButton>{active ? <button className="button outline danger" onClick={() => void onRun(`stop:${instance.id}`, () => window.manager.stopInstance(instance.id, instance.status === 'stopping'))}><CircleStop size={16} />{instance.status === 'stopping' ? '强制停止' : '停止'}</button> : <button className="button primary" onClick={() => void onRun(`start:${instance.id}`, () => window.manager.startInstance(instance.id))}><Play size={16} />启动</button>}</>}</div></header><div className={`web-host ${instance.status !== 'running' || snapshot.settings.openMode === 'external' ? 'inactive' : ''}`} ref={host}>{(instance.status !== 'running' || snapshot.settings.openMode === 'external') && <div><TerminalSquare size={28} /><strong>{snapshot.settings.openMode === 'external' && instance.status === 'running' ? '已在浏览器打开' : instanceStatusLabel(instance)}</strong><span>{instance.lastError ?? (snapshot.settings.openMode === 'external' ? '可以使用右上角浏览器按钮再次打开。' : '启动实例后将在这里打开 DSH 界面。')}</span>{recovery && <div className="recovery-actions"><button className="button primary" disabled={busy !== null} onClick={() => recover(true)}>确认已停止，使用自动端口</button><button className="button outline" disabled={busy !== null || instance.port <= 0} onClick={() => recover(false)}>确认已停止，保留端口 {instance.port || ''}</button></div>}</div>}</div></div>
 }
 
+function TemplateNameDialog({ title, initialName, submitLabel, onClose, onSubmit, onDone, setError }: { title: string; initialName: string; submitLabel: string; onClose: () => void; onSubmit: (name: string) => Promise<unknown>; onDone: () => void; setError: (value: string | null) => void }): ReactNode {
+  const [name, setName] = useState(initialName); const [submitting, setSubmitting] = useState(false)
+  const submit = async (event: FormEvent): Promise<void> => { event.preventDefault(); setSubmitting(true); setError(null); try { await onSubmit(name); onDone() } catch (error) { setError(errorText(error)) } finally { setSubmitting(false) } }
+  return <Dialog title={title} onClose={onClose}><form className="form" onSubmit={event => void submit(event)}><label className="field"><span>名称</span><input value={name} onChange={event => setName(event.target.value)} required /></label><footer><button className="button outline" type="button" onClick={onClose}>取消</button><button className="button primary" disabled={submitting}>{submitting ? '正在保存…' : submitLabel}</button></footer></form></Dialog>
+}
 function RuntimeDialog({ onClose, onCreated, setError }: { onClose: () => void; onCreated: () => Promise<void>; setError: (value: string | null) => void }): ReactNode {
-  const [name, setName] = useState('dsh-v1')
-  const [path, setPath] = useState('')
-  const [submitting, setSubmitting] = useState(false)
+  const [name, setName] = useState('本地 DSH'); const [path, setPath] = useState(''); const [submitting, setSubmitting] = useState(false)
   const submit = async (event: FormEvent): Promise<void> => { event.preventDefault(); setSubmitting(true); setError(null); try { await window.manager.registerRuntime({ name, path }); await onCreated() } catch (error) { setError(errorText(error)) } finally { setSubmitting(false) } }
-  return <Dialog title="注册运行时" onClose={onClose}><form className="form" onSubmit={event => void submit(event)}><label className="field"><span>名称</span><input value={name} onChange={event => setName(event.target.value)} required /></label><DirectoryField label="运行时目录" value={path} onChange={setPath} /><p className="form-note">即使预检受阻也会保留记录，便于查看缺失的依赖或构建产物。</p><footer><button className="button outline" type="button" onClick={onClose}>取消</button><button className="button primary" disabled={submitting}>{submitting ? '正在检查…' : '注册'}</button></footer></form></Dialog>
+  return <Dialog title="注册运行时" onClose={onClose}><form className="form" onSubmit={event => void submit(event)}><label className="field"><span>名称</span><input value={name} onChange={event => setName(event.target.value)} required /></label><DirectoryField label="运行时目录" value={path} onChange={setPath} /><p className="form-note">运行版本与实例工作区相互独立。预检受阻的记录也会保留，便于执行安装或构建任务。</p><footer><button className="button outline" type="button" onClick={onClose}>取消</button><button className="button primary" disabled={submitting}>{submitting ? '正在检查…' : '注册'}</button></footer></form></Dialog>
 }
-
+function WorktreeDialog({ snapshot, onClose, onCreated, setError }: { snapshot: ManagerSnapshot; onClose: () => void; onCreated: () => void; setError: (value: string | null) => void }): ReactNode {
+  const sources = snapshot.runtimes.filter(runtime => runtime.source === 'local' && !runtime.immutable); const [sourceRuntimeId, setSourceRuntimeId] = useState(sources[0]?.id ?? ''); const [name, setName] = useState('候选工作树'); const [ref, setRef] = useState('HEAD'); const [submitting, setSubmitting] = useState(false)
+  const submit = async (event: FormEvent): Promise<void> => { event.preventDefault(); setSubmitting(true); setError(null); try { await window.manager.createWorktree({ sourceRuntimeId, name, ref }); onCreated() } catch (error) { setError(errorText(error)) } finally { setSubmitting(false) } }
+  return <Dialog title="创建 Git 工作树" onClose={onClose}><form className="form" onSubmit={event => void submit(event)}><label className="field"><span>来源运行时</span><select value={sourceRuntimeId} onChange={event => setSourceRuntimeId(event.target.value)} required>{sources.map(runtime => <option value={runtime.id} key={runtime.id}>{runtime.name}</option>)}</select></label><label className="field"><span>名称</span><input value={name} onChange={event => setName(event.target.value)} required /></label><label className="field"><span>Git ref</span><input value={ref} onChange={event => setRef(event.target.value)} required /><small>例如 HEAD、分支名、tag 或 commit。目标目录由管理器分配。</small></label><p className="form-note">新工作树会自动注册为本地运行时，并保持启动受阻，直到完成依赖安装和完整构建。</p><footer><button className="button outline" type="button" onClick={onClose}>取消</button><button className="button primary" disabled={submitting || !sourceRuntimeId}>{submitting ? '正在创建…' : '创建工作树'}</button></footer></form></Dialog>
+}
 function EnvironmentDialog({ snapshot, onClose, onCreated, setError }: { snapshot: ManagerSnapshot; onClose: () => void; onCreated: () => void; setError: (value: string | null) => void }): ReactNode {
-  const [mode, setMode] = useState<'isolated' | 'clone' | 'production'>('isolated')
-  const [name, setName] = useState('开发环境')
-  const [path, setPath] = useState('')
-  const [source, setSource] = useState(snapshot.environments[0]?.id ?? '')
-  const [runtime, setRuntime] = useState(snapshot.runtimes[0]?.id ?? '')
-  const [submitting, setSubmitting] = useState(false)
+  const [mode, setMode] = useState<'isolated' | 'clone' | 'production'>('isolated'); const [name, setName] = useState('开发环境'); const [path, setPath] = useState(''); const [source, setSource] = useState(snapshot.environments[0]?.id ?? ''); const [runtime, setRuntime] = useState(snapshot.settings.defaultRuntimeId ?? snapshot.runtimes[0]?.id ?? ''); const [submitting, setSubmitting] = useState(false)
   const submit = async (event: FormEvent): Promise<void> => { event.preventDefault(); setSubmitting(true); setError(null); try { if (mode === 'clone') await window.manager.cloneEnvironment({ name, sourceEnvironmentId: source, targetRuntimeId: runtime }); else await window.manager.createEnvironment({ name, kind: mode, ...(mode === 'production' ? { path } : {}) }); onCreated() } catch (error) { setError(errorText(error)) } finally { setSubmitting(false) } }
-  const modes = [{ id: 'isolated', label: '新环境' }, { id: 'clone', label: '克隆' }, { id: 'production', label: '现有环境' }] as const
-  return <Dialog title="创建环境" onClose={onClose}><form className="form" onSubmit={event => void submit(event)}><div className="segmented">{modes.map(item => <button type="button" className={mode === item.id ? 'active' : ''} onClick={() => setMode(item.id)} key={item.id}>{item.label}</button>)}</div><label className="field"><span>名称</span><input value={name} onChange={event => setName(event.target.value)} required /></label>{mode === 'production' && <DirectoryField label="现有 DSH_HOME" value={path} onChange={setPath} />}{mode === 'clone' && <><label className="field"><span>来源环境</span><select value={source} onChange={event => setSource(event.target.value)} required>{snapshot.environments.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="field"><span>目标运行时</span><select value={runtime} onChange={event => setRuntime(event.target.value)} required>{snapshot.runtimes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><p className="form-note">若来源实例正在运行，管理器会先停止实例，完成克隆后立即重新启动。副本随后独立演化。</p></>}<footer><button className="button outline" type="button" onClick={onClose}>取消</button><button className="button primary" disabled={submitting || (mode === 'clone' && (!source || !runtime))}>{submitting ? '正在创建…' : '创建'}</button></footer></form></Dialog>
+  return <Dialog title="创建环境" onClose={onClose}><form className="form" onSubmit={event => void submit(event)}><div className="segmented">{([{ id: 'isolated', label: '新环境' }, { id: 'clone', label: '克隆' }, { id: 'production', label: '现有环境' }] as const).map(item => <button type="button" className={mode === item.id ? 'active' : ''} onClick={() => setMode(item.id)} key={item.id}>{item.label}</button>)}</div><label className="field"><span>名称</span><input value={name} onChange={event => setName(event.target.value)} required /></label>{mode === 'production' && <DirectoryField label="现有 DSH_HOME" value={path} onChange={setPath} />}{mode === 'clone' && <><label className="field"><span>来源环境</span><select value={source} onChange={event => setSource(event.target.value)} required>{snapshot.environments.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="field"><span>目标运行时</span><select value={runtime} onChange={event => setRuntime(event.target.value)} required>{snapshot.runtimes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><p className="form-note">来源实例会在复制期间停止，完成后立即恢复；副本随后独立演化。</p></>}<footer><button className="button outline" type="button" onClick={onClose}>取消</button><button className="button primary" disabled={submitting || (mode === 'clone' && (!source || !runtime))}>{submitting ? '正在创建…' : '创建'}</button></footer></form></Dialog>
 }
-
 function InstanceDialog({ snapshot, onClose, onCreated, setError }: { snapshot: ManagerSnapshot; onClose: () => void; onCreated: () => void; setError: (value: string | null) => void }): ReactNode {
-  const [name, setName] = useState('开发实例')
-  const [runtime, setRuntime] = useState(snapshot.runtimes[0]?.id ?? '')
-  const selectedRuntime = useMemo(() => snapshot.runtimes.find(item => item.id === runtime), [runtime, snapshot.runtimes])
-  const [environment, setEnvironment] = useState(snapshot.environments[0]?.id ?? '')
-  const [workspace, setWorkspace] = useState(selectedRuntime?.path ?? '')
-  const [port, setPort] = useState('0')
-  const [submitting, setSubmitting] = useState(false)
+  const defaultRuntime = snapshot.runtimes.find(item => item.id === snapshot.settings.defaultRuntimeId) ?? snapshot.runtimes[0]; const [name, setName] = useState('开发实例'); const [runtime, setRuntime] = useState(defaultRuntime?.id ?? ''); const selectedRuntime = useMemo(() => snapshot.runtimes.find(item => item.id === runtime), [runtime, snapshot.runtimes]); const [environment, setEnvironment] = useState(snapshot.environments[0]?.id ?? ''); const [workspace, setWorkspace] = useState(selectedRuntime?.path ?? ''); const [port, setPort] = useState('0'); const [submitting, setSubmitting] = useState(false)
   useEffect(() => { if (selectedRuntime && !workspace) setWorkspace(selectedRuntime.path) }, [selectedRuntime, workspace])
   const submit = async (event: FormEvent): Promise<void> => { event.preventDefault(); setSubmitting(true); setError(null); try { await window.manager.createInstance({ name, runtimeId: runtime, environmentId: environment, workspacePath: workspace, port: Number(port) }); onCreated() } catch (error) { setError(errorText(error)) } finally { setSubmitting(false) } }
-  return <Dialog title="新建实例" onClose={onClose}><form className="form" onSubmit={event => void submit(event)}><label className="field"><span>名称</span><input value={name} onChange={event => setName(event.target.value)} required /></label><label className="field"><span>运行时</span><select value={runtime} onChange={event => { setRuntime(event.target.value); const item = snapshot.runtimes.find(candidate => candidate.id === event.target.value); if (item) setWorkspace(item.path) }} required>{snapshot.runtimes.map(item => <option key={item.id} value={item.id}>{item.name}{item.preflight.ready ? '' : '（受阻）'}</option>)}</select></label><DirectoryField label="工作区" value={workspace} onChange={setWorkspace} /><label className="field"><span>环境</span><select value={environment} onChange={event => setEnvironment(event.target.value)} required><option value="" disabled>选择环境</option>{snapshot.environments.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="field"><span>端口</span><input type="number" min="0" max="65535" value={port} onChange={event => setPort(event.target.value)} /><small>填写 0，由系统自动分配可用端口。</small></label>{selectedRuntime && !selectedRuntime.preflight.ready && <p className="validation-note">该运行时有 {selectedRuntime.preflight.checks.filter(check => check.level === 'failure').length} 项预检受阻。实例可以保存，但暂时无法启动。</p>}<footer><button className="button outline" type="button" onClick={onClose}>取消</button><button className="button primary" disabled={submitting || !environment}>{submitting ? '正在保存…' : '创建'}</button></footer></form></Dialog>
+  return <Dialog title="新建实例" onClose={onClose}><form className="form" onSubmit={event => void submit(event)}><label className="field"><span>名称</span><input value={name} onChange={event => setName(event.target.value)} required /></label><label className="field"><span>运行时</span><select value={runtime} onChange={event => { setRuntime(event.target.value); const item = snapshot.runtimes.find(candidate => candidate.id === event.target.value); if (item) setWorkspace(item.path) }} required>{snapshot.runtimes.map(item => <option key={item.id} value={item.id}>{item.name}{item.preflight.ready && !item.taskBlocked ? '' : '（受阻）'}</option>)}</select></label><DirectoryField label="工作区" value={workspace} onChange={setWorkspace} /><label className="field"><span>环境</span><select value={environment} onChange={event => setEnvironment(event.target.value)} required><option value="" disabled>选择环境</option>{snapshot.environments.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="field"><span>端口</span><input type="number" min="0" max="65535" value={port} onChange={event => setPort(event.target.value)} /><small>填写 0，由系统自动分配可用端口。</small></label>{selectedRuntime && (!selectedRuntime.preflight.ready || selectedRuntime.taskBlocked) && <p className="validation-note">该运行时暂时无法启动，请先在运行时页完成预检或构建任务。</p>}<footer><button className="button outline" type="button" onClick={onClose}>取消</button><button className="button primary" disabled={submitting || !environment}>{submitting ? '正在保存…' : '创建'}</button></footer></form></Dialog>
 }
-
-function LogPanel({ log, onClose }: { log: { name: string; path: string; content: string; truncated: boolean }; onClose: () => void }): ReactNode {
-  return <aside className="log-panel"><header><div><h2>{log.name}</h2><p>运行日志{log.truncated ? ' · 仅显示最后 256 KiB' : ''}</p></div><IconButton label="关闭日志" onClick={onClose}><X size={18} /></IconButton></header><p className="log-path" title={log.path}>{shortPath(log.path)}</p><pre>{log.content || '暂无日志输出'}</pre></aside>
+function PromotionDialog({ snapshot, onClose, onCreated, setError }: { snapshot: ManagerSnapshot; onClose: () => void; onCreated: () => void; setError: (value: string | null) => void }): ReactNode {
+  const candidates = snapshot.instances.filter(instance => instance.status === 'running' && instance.health?.ok && snapshot.environments.find(environment => environment.id === instance.environmentId)?.kind !== 'production'); const production = snapshot.instances.filter(instance => snapshot.environments.find(environment => environment.id === instance.environmentId)?.kind === 'production'); const boundProductionId = production.some(item => item.id === snapshot.settings.productionInstanceId) ? snapshot.settings.productionInstanceId : undefined; const [candidateId, setCandidateId] = useState(candidates[0]?.id ?? ''); const [productionId, setProductionId] = useState(boundProductionId ?? production[0]?.id ?? ''); const [confirmed, setConfirmed] = useState(false); const [submitting, setSubmitting] = useState(false)
+  const submit = async (event: FormEvent): Promise<void> => { event.preventDefault(); setSubmitting(true); setError(null); try { await window.manager.preparePromotion(candidateId, productionId, confirmed); onCreated() } catch (error) { setError(errorText(error)) } finally { setSubmitting(false) } }
+  return <Dialog title="提升到生产" onClose={onClose}><form className="form" onSubmit={event => void submit(event)}><label className="field"><span>候选实例</span><select value={candidateId} onChange={event => setCandidateId(event.target.value)} required><option value="" disabled>选择健康的隔离实例</option>{candidates.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label className="field"><span>生产实例</span><select value={productionId} disabled={Boolean(boundProductionId)} onChange={event => setProductionId(event.target.value)} required><option value="" disabled>选择生产实例</option>{production.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label className="check-field"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} /><span>已在候选实例完成一次实际测试对话</span></label><p className="form-note">管理器将停止生产实例，创建完整环境备份，以候选运行版本启动生产；确认生产正常前不会改变默认版本。</p><footer><button className="button outline" type="button" onClick={onClose}>取消</button><button className="button primary" disabled={submitting || !candidateId || !productionId || !confirmed}>{submitting ? '正在提升…' : '备份并提升'}</button></footer></form></Dialog>
 }
-
-function EmptyState({ icon, title, detail, action }: { icon: ReactNode; title: string; detail: string; action: ReactNode }): ReactNode {
-  return <div className="empty-state"><span>{icon}</span><div><strong>{title}</strong><p>{detail}</p></div>{action}</div>
-}
+function LogPanel({ log, onClose }: { log: LogState; onClose: () => void }): ReactNode { return <aside className="log-panel"><header><div><h2>{log.name}</h2><p>持久化日志{log.truncated ? ' · 仅显示末尾内容' : ''}</p></div><IconButton label="关闭日志" onClick={onClose}><X size={18} /></IconButton></header><p className="log-path" title={log.path}>{shortPath(log.path)}</p><pre>{log.content || '暂无日志输出'}</pre></aside> }
+function EmptyState({ icon, title, detail, action }: { icon: ReactNode; title: string; detail: string; action: ReactNode }): ReactNode { return <div className="empty-state"><span>{icon}</span><div><strong>{title}</strong><p>{detail}</p></div>{action}</div> }

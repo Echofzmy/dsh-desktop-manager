@@ -17,13 +17,15 @@ async function fixture(stubbornChild = false): Promise<{ root: string; instance:
   await mkdir(home)
   const entry = join(root, 'launcher.cjs')
   const child = stubbornChild
-    ? "require('node:child_process').spawn(process.execPath, ['-e', \"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)\"], { stdio: 'ignore' })"
+    ? "const stubborn = require('node:child_process').spawn(process.execPath, ['-e', \"process.on('SIGTERM',()=>{});console.log('ready');setInterval(()=>{},1000)\"], { stdio: ['ignore', 'pipe', 'ignore'] })"
     : ''
+  const listen = stubbornChild ? "stubborn.stdout.once('data', start)" : 'start()'
   await writeFile(entry, `
 const http = require('node:http')
 ${child}
 const server = http.createServer((_request, response) => { response.statusCode = 200; response.end('ok') })
-server.listen(0, '127.0.0.1', () => console.log('dsh web: http://127.0.0.1:' + server.address().port))
+const start = () => server.listen(0, '127.0.0.1', () => console.log('dsh web: http://127.0.0.1:' + server.address().port))
+${listen}
 `)
   const instance: InstanceRecord = {
     id: 'instance', name: 'Test', runtimeId: 'runtime', workspacePath: workspace, environmentId: 'environment',

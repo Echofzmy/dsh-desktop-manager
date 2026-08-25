@@ -60,13 +60,14 @@ try {
   }))
   if (overflow.horizontal > 0 || overflow.vertical > 0) throw new Error(`Application shell overflowed: ${JSON.stringify(overflow)}`)
 
-  await page.getByRole('button', { name: '注册运行时' }).first().click()
+  await page.getByRole('button', { name: '运行时', exact: true }).click()
+  await page.getByRole('button', { name: '注册本地运行时' }).click()
   await page.getByRole('textbox', { name: /运行时目录/u }).fill(join(workspaceRoot, 'dsh-v1'))
   await page.getByRole('button', { name: '注册', exact: true }).click()
   let registered
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const current = await page.evaluate(() => window.manager.getSnapshot())
-    registered = current.runtimes[0]
+    registered = current.runtimes.find(runtime => runtime.source === 'local')
     if (registered) break
     await new Promise(resolve => setTimeout(resolve, 100))
   }
@@ -75,9 +76,23 @@ try {
     throw new Error(`Expected dsh-v1 to remain registered with a preflight report: ${JSON.stringify({ registered, body })}`)
   }
 
+  await page.getByRole('button', { name: '概览', exact: true }).click()
   await page.getByTitle('创建环境').click()
   await page.getByRole('dialog', { name: '创建环境' }).getByRole('button', { name: '创建' }).click()
   await page.getByText('可用', { exact: true }).waitFor()
+  const bundledProbe = await page.evaluate(async ({ workspace }) => {
+    const snapshot = await window.manager.getSnapshot()
+    const runtime = snapshot.runtimes.find(item => item.source === 'bundled')
+    if (!runtime) throw new Error('Bundled runtime is missing')
+    const environment = await window.manager.createEnvironment({ name: '内置探针环境', kind: 'isolated' })
+    let instance = await window.manager.createInstance({ name: '内置运行时探针', runtimeId: runtime.id, environmentId: environment.id, workspacePath: workspace, port: 0 })
+    instance = await window.manager.startInstance(instance.id)
+    if (instance.status !== 'running') throw new Error(`Bundled runtime did not start: ${JSON.stringify(instance)}`)
+    await window.manager.stopInstance(instance.id)
+    await window.manager.deleteInstance(instance.id, true)
+    return { version: runtime.version, port: instance.port }
+  }, { workspace: workspaceRoot })
+  if (!bundledProbe.version || !bundledProbe.port) throw new Error(`Bundled runtime probe was incomplete: ${JSON.stringify(bundledProbe)}`)
 
   await page.screenshot({ path: join(artifacts, 'home-1440x920.png'), fullPage: true })
   await page.setViewportSize({ width: 1000, height: 700 })
@@ -94,7 +109,9 @@ try {
   let instancePort
   if (registered.preflight.ready) {
     await page.getByRole('button', { name: '新建实例' }).first().click()
-    await page.getByRole('dialog', { name: '新建实例' }).getByRole('button', { name: '创建' }).click()
+    const instanceDialog = page.getByRole('dialog', { name: '新建实例' })
+    await instanceDialog.getByLabel('运行时').selectOption(registered.id)
+    await instanceDialog.getByRole('button', { name: '创建' }).click()
     let instance
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const current = await page.evaluate(() => window.manager.getSnapshot())

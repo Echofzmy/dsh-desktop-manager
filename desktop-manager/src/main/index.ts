@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { IPC } from '../shared/ipc.js'
@@ -6,8 +6,11 @@ import type {
   CloneEnvironmentInput,
   CreateEnvironmentInput,
   CreateInstanceInput,
+  CreateWorktreeInput,
   EmbeddedViewBounds,
+  InstallOfficialRuntimeInput,
   RegisterRuntimeInput,
+  UpdateSettingsInput,
 } from '../shared/types.js'
 import { InstanceViewManager } from './instance-view-manager.js'
 import { ManagerService } from './manager-service.js'
@@ -59,11 +62,51 @@ function registerIpc(): void {
   }
 
   handle(IPC.snapshot, () => requiredManager().snapshot())
+  handle(IPC.officialCheck, (_event, channel: unknown) => {
+    if (channel !== 'stable' && channel !== 'prerelease') throw new Error('Official update channel is invalid')
+    return requiredManager().checkOfficialUpdate(channel)
+  })
+  handle(IPC.officialInstall, (_event, input: InstallOfficialRuntimeInput) => {
+    if (typeof input !== 'object' || input === null) throw new Error('Official install input is required')
+    return requiredManager().installOfficialRuntime({ version: assertId(input.version, 'Official version') })
+  })
+  handle(IPC.officialInstallCancel, (_event, id: string) => requiredManager().cancelRuntimeInstall(assertId(id, 'Operation id')))
+  handle(IPC.settingsUpdate, (_event, input: UpdateSettingsInput) => {
+    if (typeof input !== 'object' || input === null) throw new Error('Settings input is required')
+    if (input.openMode !== undefined && input.openMode !== 'embedded' && input.openMode !== 'external') throw new Error('Open mode is invalid')
+    if (input.checkUpdatesOnStartup !== undefined && typeof input.checkUpdatesOnStartup !== 'boolean') throw new Error('Update preference is invalid')
+    return requiredManager().updateSettings(input)
+  })
   handle(IPC.runtimeRegister, (_event, input: RegisterRuntimeInput) => requiredManager().registerRuntime(input))
   handle(IPC.runtimeRefresh, (_event, id: string) => requiredManager().refreshRuntime(assertId(id, 'Runtime id')))
+  handle(IPC.runtimeSetDefault, (_event, id: string) => requiredManager().setDefaultRuntime(assertId(id, 'Runtime id')))
+  handle(IPC.runtimeDelete, (_event, id: string) => requiredManager().deleteRuntime(assertId(id, 'Runtime id')))
+  handle(IPC.runtimeTaskStart, (_event, id: string, kind: unknown) => {
+    if (kind !== 'install' && kind !== 'typecheck' && kind !== 'test' && kind !== 'build') throw new Error('Runtime task kind is invalid')
+    return requiredManager().startRuntimeTask(assertId(id, 'Runtime id'), kind)
+  })
+  handle(IPC.runtimeTaskCancel, (_event, id: string) => requiredManager().cancelRuntimeTask(assertId(id, 'Task id')))
+  handle(IPC.runtimeTaskLog, (_event, id: string) => requiredManager().readRuntimeTaskLog(assertId(id, 'Task id')))
+  handle(IPC.runtimeWorktreeCreate, (_event, input: CreateWorktreeInput) => {
+    if (typeof input !== 'object' || input === null) throw new Error('Worktree input is required')
+    return requiredManager().createWorktree({ sourceRuntimeId: assertId(input.sourceRuntimeId, 'Source runtime id'), name: assertId(input.name, 'Worktree name'), ref: assertId(input.ref, 'Git ref') })
+  })
   handle(IPC.environmentCreate, (_event, input: CreateEnvironmentInput) => requiredManager().createEnvironment(input))
   handle(IPC.environmentClone, (_event, input: CloneEnvironmentInput) => requiredManager().cloneEnvironment(input))
+  handle(IPC.environmentDelete, (_event, id: string, deleteData: unknown) => requiredManager().deleteEnvironment(assertId(id, 'Environment id'), deleteData !== false))
+  handle(IPC.environmentBackup, (_event, id: string) => requiredManager().createEnvironmentBackup(assertId(id, 'Environment id')))
   handle(IPC.instanceCreate, (_event, input: CreateInstanceInput) => requiredManager().createInstance(input))
+  handle(IPC.instanceDelete, (_event, id: string, deleteEnvironment: unknown) => requiredManager().deleteInstance(assertId(id, 'Instance id'), deleteEnvironment === true))
+  handle(IPC.promotionPrepare, (_event, candidateId: string, productionId: string, confirmed: unknown) => {
+    if (typeof confirmed !== 'boolean') throw new Error('Promotion confirmation must be a boolean')
+    return requiredManager().preparePromotion(assertId(candidateId, 'Candidate instance id'), assertId(productionId, 'Production instance id'), confirmed)
+  })
+  handle(IPC.promotionConfirm, (_event, id: string) => requiredManager().confirmPromotion(assertId(id, 'Promotion id')))
+  handle(IPC.promotionRollback, (_event, id: string) => requiredManager().rollbackPromotion(assertId(id, 'Promotion id')))
+  handle(IPC.promotionDismiss, (_event, id: string) => requiredManager().dismissPromotion(assertId(id, 'Promotion id')))
+  handle(IPC.templateSave, (_event, instanceId: string, name: string) => requiredManager().saveInstanceTemplate(assertId(instanceId, 'Instance id'), assertId(name, 'Template name')))
+  handle(IPC.templateInstantiate, (_event, templateId: string, name: string) => requiredManager().createInstanceFromTemplate(assertId(templateId, 'Template id'), assertId(name, 'Instance name')))
+  handle(IPC.templateDelete, (_event, id: string) => requiredManager().deleteInstanceTemplate(assertId(id, 'Template id')))
   handle(IPC.instanceStart, (_event, id: string) => requiredManager().startInstance(assertId(id, 'Instance id')))
   handle(IPC.instanceStop, (_event, id: string, force?: boolean) => requiredManager().stopInstance(assertId(id, 'Instance id'), force === true))
   handle(IPC.instanceRestart, (_event, id: string) => requiredManager().restartInstance(assertId(id, 'Instance id')))
@@ -89,8 +132,26 @@ function registerIpc(): void {
   handle(IPC.viewHide, () => views!.hide())
 }
 
+function installMenu(): void {
+  const send = (command: 'home' | 'runtimes' | 'settings' | 'new-instance'): void => {
+    mainWindow?.show()
+    mainWindow?.focus()
+    mainWindow?.webContents.send(IPC.menuCommand, command)
+  }
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    ...(process.platform === 'darwin' ? [{ label: 'DSH 管理器', submenu: [{ role: 'about' as const }, { type: 'separator' as const }, { label: '设置…', accelerator: 'CommandOrControl+,', click: () => send('settings') }, { type: 'separator' as const }, { role: 'hide' as const }, { role: 'hideOthers' as const }, { role: 'unhide' as const }, { type: 'separator' as const }, { role: 'quit' as const }] }] : []),
+    { label: '文件', submenu: [{ label: '新建实例', accelerator: 'CommandOrControl+N', click: () => send('new-instance') }, { type: 'separator' }, ...(process.platform === 'darwin' ? [] : [{ role: 'quit' as const }])] },
+    { label: '前往', submenu: [{ label: '概览', accelerator: 'CommandOrControl+1', click: () => send('home') }, { label: '运行时', accelerator: 'CommandOrControl+2', click: () => send('runtimes') }, { label: '设置', accelerator: 'CommandOrControl+,', click: () => send('settings') }] },
+    { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
+    { label: '窗口', submenu: [{ role: 'minimize' }, { role: 'zoom' }, ...(process.platform === 'darwin' ? [{ type: 'separator' as const }, { role: 'front' as const }] : [])] },
+  ]))
+}
+
 async function createWindow(): Promise<void> {
-  manager = new ManagerService(app.getPath('userData'))
+  const bundledRuntimeRoot = app.isPackaged
+    ? join(process.resourcesPath, 'runtimes', 'official', 'bundled', 'current')
+    : join(app.getAppPath(), 'build', 'bundled-runtime')
+  manager = new ManagerService(app.getPath('userData'), bundledRuntimeRoot)
   await manager.initialize()
 
   mainWindow = new BrowserWindow({
@@ -108,6 +169,7 @@ async function createWindow(): Promise<void> {
     },
   })
   views = new InstanceViewManager(mainWindow)
+  installMenu()
   registerIpc()
   manager.subscribe(snapshot => {
     if (!mainWindow?.isDestroyed()) mainWindow?.webContents.send(IPC.snapshotChanged, snapshot)

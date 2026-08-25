@@ -1,6 +1,8 @@
 node_modules/
 out/
 dist/
+build/bundled-runtime/
+build/bundled-runtime.staging-*/
 coverage/
 .artifacts/
 *.log

@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { access, readFile, realpath, stat } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { access, opendir, readFile, realpath, stat } from 'node:fs/promises'
+import { dirname, join, relative } from 'node:path'
 import { createRequire } from 'node:module'
 import { promisify } from 'node:util'
 import semver from 'semver'
@@ -8,6 +9,33 @@ import type { PreflightCheck, PreflightReport } from '../shared/types.js'
 
 const execFileAsync = promisify(execFile)
 const BUILT_ENTRY = join('apps', 'cli', 'lib', 'bin.js')
+
+async function buildFingerprint(runtimePath: string, roots: string[]): Promise<string> {
+  const files: string[] = []
+  const visitedDirectories = new Set<string>()
+  const walk = async (current: string): Promise<void> => {
+    const canonical = await realpath(current)
+    if (visitedDirectories.has(canonical)) return
+    visitedDirectories.add(canonical)
+    for await (const entry of await opendir(canonical)) {
+      const path = join(canonical, entry.name)
+      if (entry.isDirectory()) await walk(path)
+      else if (entry.isSymbolicLink()) {
+        const resolved = await realpath(path)
+        const resolvedStats = await stat(resolved)
+        if (resolvedStats.isDirectory()) await walk(resolved)
+        else if (resolvedStats.isFile()) files.push(resolved)
+      } else if (entry.isFile()) files.push(path)
+    }
+  }
+  for (const root of roots) await walk(root)
+  files.sort()
+  const hash = createHash('sha256')
+  for (const path of files) {
+    hash.update(relative(runtimePath, path)).update('\0').update(await readFile(path)).update('\0')
+  }
+  return hash.digest('hex')
+}
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -100,18 +128,20 @@ export async function preflightRuntime(inputPath: string): Promise<{ path: strin
     })
   }
 
-  const systemNode = await command('node', ['--version'], runtimePath)
-  const nodeVersion = systemNode?.replace(/^v/, '')
+  const sourceCheckout = manifest.name === '@deepseek-ai/dsh-root'
+  const sourceNode = sourceCheckout ? await command('node', ['--version'], runtimePath) : undefined
+  const nodeVersion = sourceCheckout ? sourceNode?.replace(/^v/, '') : process.versions.node
   const nodeRange = typeof manifest.engines?.node === 'string' ? manifest.engines.node : undefined
   const nodeCompatible = nodeVersion !== undefined && (nodeRange === undefined || semver.satisfies(nodeVersion, nodeRange))
+  const nodeLabel = sourceCheckout ? '系统 Node.js' : '内置 Node.js'
   addCheck(checks, nodeCompatible
-    ? { id: 'node', label: 'Node.js', level: 'pass', detail: `v${nodeVersion}${nodeRange ? `，满足 ${nodeRange}` : ''}` }
+    ? { id: 'node', label: nodeLabel, level: 'pass', detail: `v${nodeVersion}${nodeRange ? `，满足 ${nodeRange}` : ''}` }
     : {
         id: 'node',
-        label: 'Node.js',
+        label: nodeLabel,
         level: 'failure',
         detail: nodeVersion ? `v${nodeVersion} 不满足 ${nodeRange}` : '系统中未找到 Node.js',
-        remediation: nodeRange ? `请安装满足 ${nodeRange} 的 Node.js 版本。` : '请先安装 Node.js。',
+        remediation: sourceCheckout ? `请安装满足 ${nodeRange ?? '运行时要求'} 的 Node.js。` : '请升级到携带兼容 Node.js 的 DSH 管理器版本。',
       })
 
   const pnpmVersion = await command('pnpm', ['--version'], runtimePath)
@@ -134,7 +164,6 @@ export async function preflightRuntime(inputPath: string): Promise<{ path: strin
         remediation: '构建运行时前，请先安装其声明的包管理器。',
       })
 
-  const sourceCheckout = manifest.name === '@deepseek-ai/dsh-root'
   const packagedEntry = manifest.name === '@deepseek-ai/dsh' && typeof manifest.bin?.dsh === 'string'
     ? manifest.bin.dsh
     : undefined
@@ -200,6 +229,14 @@ export async function preflightRuntime(inputPath: string): Promise<{ path: strin
     addCheck(checks, { id: 'git', label: 'Git revision', level: 'warning', detail: '该目录不在 Git 工作树中' })
   }
 
+  const fingerprintCandidates = sourceCheckout
+    ? [join(runtimePath, 'apps', 'cli', 'lib'), join(runtimePath, 'apps', 'web', 'dist'), join(runtimePath, 'apps', 'cli', 'node_modules')]
+    : [dirname(entryPath), join(publishedFrontendRoot!, 'dist')]
+  const fingerprintRoots = (await Promise.all(fingerprintCandidates.map(async path => await exists(path) ? path : undefined))).filter((path): path is string => Boolean(path))
+  const fingerprint = built && webBuilt
+    ? await buildFingerprint(runtimePath, fingerprintRoots)
+    : undefined
+
   return {
     path: runtimePath,
     report: {
@@ -210,6 +247,7 @@ export async function preflightRuntime(inputPath: string): Promise<{ path: strin
       ...(pnpmVersion ? { pnpmVersion } : {}),
       ...(typeof manifest.version === 'string' ? { packageVersion: manifest.version } : {}),
       ...(gitCommit ? { gitCommit, gitDirty: Boolean(gitStatus) } : {}),
+      ...(fingerprint ? { buildFingerprint: fingerprint } : {}),
       checks,
     },
   }

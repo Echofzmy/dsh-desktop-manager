@@ -1,12 +1,13 @@
 {
   "name": "dsh-desktop-manager",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Desktop runtime and instance manager for DeepSeek Harness",
   "author": "liangyc",
   "type": "module",
   "main": "out/main/index.js",
   "packageManager": "pnpm@11.5.2",
+  "dshBundledVersion": "0.1.1-rc.2",
   "engines": {
     "node": ">=22.19.0"
   },
@@ -18,10 +19,14 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:electron": "pnpm run build && node tests/electron-smoke.mjs",
-    "package": "pnpm run build && electron-builder --dir"
+    "test:packaged": "DSH_MANAGER_EXECUTABLE=\"$PWD/dist/mac-arm64/DSH 管理器.app/Contents/MacOS/DSH 管理器\" node tests/electron-smoke.mjs",
+    "prepare:bundled-runtime": "node scripts/prepare-bundled-runtime.mjs",
+    "package:dir": "pnpm run prepare:bundled-runtime && pnpm run build && electron-builder --dir",
+    "package": "pnpm run prepare:bundled-runtime && pnpm run build && electron-builder && pnpm run test:packaged"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
+    "npm": "11.5.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "semver": "^7.7.3"
@@ -43,6 +48,7 @@
   },
   "build": {
     "appId": "ai.deepseek.dsh-manager",
+    "afterPack": "scripts/after-pack.mjs",
     "productName": "DSH 管理器",
     "directories": {
       "output": "dist"
@@ -52,6 +58,7 @@
       "package.json"
     ],
     "mac": {
+      "icon": "build/icon.icns",
       "category": "public.app-category.developer-tools",
       "target": [
         "dmg",
