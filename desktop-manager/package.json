@@ -48,7 +48,7 @@
   },
   "build": {
     "appId": "ai.deepseek.dsh-manager",
-    "buildVersion": "0.2.3",
+    "buildVersion": "0.2.4",
     "afterPack": "scripts/after-pack.mjs",
     "productName": "DSH 管理器",
     "directories": {

@@ -68,7 +68,7 @@ button { color: inherit; }
 .error-banner { display: flex; align-items: center; justify-content: space-between; min-height: 42px; padding: 6px 16px; background: var(--danger); color: #fff; font-size: 13px; line-height: 20px; }
 .error-banner .icon-button { color: #fff; }
 .error-banner .icon-button:hover { background: rgb(255 255 255 / 14%); }
-.main-content { min-width: 0; min-height: 0; overflow: auto; }
+.main-content { grid-row: 2; min-width: 0; min-height: 0; overflow: auto; }
 .page { width: min(900px, calc(100% - 48px)); margin: 0 auto; padding: 38px 0 56px; }
 .narrow-page { width: min(780px, calc(100% - 48px)); }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 32px; }

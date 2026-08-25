@@ -139,6 +139,13 @@ try {
     }
     await page.getByText('开发实例', { exact: true }).first().click()
     await page.waitForTimeout(1_000)
+    const webHostBounds = await page.locator('.web-host').evaluate(element => {
+      const rect = element.getBoundingClientRect()
+      return { width: rect.width, height: rect.height }
+    })
+    if (webHostBounds.width < 100 || webHostBounds.height < 100) {
+      throw new Error(`Embedded DSH host collapsed: ${JSON.stringify(webHostBounds)}`)
+    }
     const managedUrls = await application.evaluate(({ webContents }) => webContents.getAllWebContents().map(contents => contents.getURL()))
     if (!managedUrls.includes(`http://127.0.0.1:${instancePort}/`)) {
       throw new Error(`Embedded DSH view did not load the managed origin: ${JSON.stringify(managedUrls)}`)
