@@ -670,11 +670,14 @@ export class ManagerService {
     const snapshot = this.snapshot()
     requiredById(snapshot.runtimes, input.runtimeId, 'Runtime')
     requiredById(snapshot.environments, input.environmentId, 'Environment')
-    const workspacePath = await realpath(requiredText(input.workspacePath, 'Workspace path'))
-    const port = input.port ?? 0
-    if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new Error('Port must be 0 or an integer between 1 and 65535')
+    const instanceId = `instance-${randomUUID()}`
+    const requestedWorkspace = input.workspacePath?.trim()
+    const launchWorkspace = join(this.#dataRoot, 'instance-workspaces', instanceId)
+    if (!requestedWorkspace) await mkdir(launchWorkspace, { recursive: true })
+    const workspacePath = await realpath(requestedWorkspace || launchWorkspace)
+    const port = 0
     const instance: InstanceRecord = {
-      id: `instance-${randomUUID()}`,
+      id: instanceId,
       name: requiredText(input.name, 'Instance name'),
       runtimeId: input.runtimeId,
       workspacePath,
@@ -1063,7 +1066,7 @@ export class ManagerService {
       environmentId = createdEnvironment.id
     }
     try {
-      return await this.createInstance({ name, runtimeId: template.runtimeId, workspacePath: template.workspacePath, environmentId: requiredText(environmentId ?? '', 'Template environment'), port: template.port })
+      return await this.createInstance({ name, runtimeId: template.runtimeId, environmentId: requiredText(environmentId ?? '', 'Template environment') })
     } catch (error) {
       if (createdEnvironment) await this.deleteEnvironment(createdEnvironment.id, true).catch(() => undefined)
       throw error

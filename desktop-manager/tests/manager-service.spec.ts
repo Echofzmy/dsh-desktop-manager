@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -21,6 +21,33 @@ describe('ManagerService environments', () => {
       .rejects.toThrow('already registered')
   })
 
+  it('creates an internal launch directory and automatic port without user choices', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-manager-instance-defaults-'))
+    roots.push(root)
+    const data = join(root, 'manager-data')
+    const runtimePath = join(root, 'runtime')
+    const environmentPath = join(root, 'environment')
+    await mkdir(runtimePath)
+    await mkdir(environmentPath)
+    await mkdir(data)
+    const timestamp = '2026-01-01T00:00:00.000Z'
+    await writeFile(join(data, 'manager-state.json'), JSON.stringify({
+      version: 3,
+      settings: { openMode: 'embedded', checkUpdatesOnStartup: false, defaultRuntimeId: 'runtime' },
+      runtimes: [{ id: 'runtime', name: 'Runtime', source: 'local', path: runtimePath, registeredAt: timestamp, preflight: { checkedAt: timestamp, ready: false, checks: [] } }],
+      environments: [{ id: 'environment', name: 'Environment', kind: 'production', path: environmentPath, createdAt: timestamp }],
+      instances: [], tasks: [], backups: [], promotions: [], operations: [], templates: [],
+    }))
+    const manager = new ManagerService(data)
+    await manager.initialize()
+
+    const instance = await manager.createInstance({ name: 'Default', runtimeId: 'runtime', environmentId: 'environment' })
+
+    expect(instance.workspacePath).toBe(await realpath(join(data, 'instance-workspaces', instance.id)))
+    expect((await stat(instance.workspacePath)).isDirectory()).toBe(true)
+    expect(instance.port).toBe(0)
+    expect(instance.automaticPort).toBe(true)
+  })
 
   it('manages defaults, templates, instances, and isolated environment deletion without touching source runtimes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-manager-management-'))

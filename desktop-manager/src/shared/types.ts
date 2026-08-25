@@ -217,9 +217,8 @@ export interface CloneEnvironmentInput {
 export interface CreateInstanceInput {
   name: string
   runtimeId: string
-  workspacePath: string
+  workspacePath?: string
   environmentId: string
-  port?: number
 }
 
 export interface InstanceLog {

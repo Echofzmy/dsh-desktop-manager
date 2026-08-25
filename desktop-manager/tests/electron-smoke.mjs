@@ -110,6 +110,8 @@ try {
   if (registered.preflight.ready) {
     await page.getByRole('button', { name: '新建实例' }).first().click()
     const instanceDialog = page.getByRole('dialog', { name: '新建实例' })
+    if (await instanceDialog.getByLabel('工作区').count()) throw new Error('New instance dialog still exposes a workspace choice')
+    if (await instanceDialog.getByLabel('端口').count()) throw new Error('New instance dialog still exposes a port choice')
     await instanceDialog.getByLabel('运行时').selectOption(registered.id)
     await instanceDialog.getByRole('button', { name: '创建' }).click()
     let instance
