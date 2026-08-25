@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { IPC } from '../shared/ipc.js'
@@ -196,7 +196,13 @@ if (hasSingleInstanceLock) {
     mainWindow?.show()
     mainWindow?.focus()
   })
-  void app.whenReady().then(createWindow)
+  void app.whenReady().then(async () => {
+    if (process.platform === 'darwin' && app.isPackaged) {
+      const dockIcon = nativeImage.createFromPath(join(process.resourcesPath, 'icon.icns'))
+      if (!dockIcon.isEmpty()) app.dock?.setIcon(dockIcon)
+    }
+    await createWindow()
+  })
 }
 
 app.on('activate', () => mainWindow?.show())
