@@ -3,7 +3,16 @@ import { mkdir, lstat, open, readFile, rename, rm, writeFile } from 'node:fs/pro
 import { dirname, join } from 'node:path'
 import { parseDocument } from 'yaml'
 
-const MODEL_NAMESPACES = ['llm-deepseek', 'llm-pi-ai', 'agent-default-model'] as const
+const SHARED_NAMESPACES = [
+  'llm-deepseek',
+  'llm-pi-ai',
+  'agent-default-model',
+  'permission',
+  'agent-presets',
+  'locale',
+  'ui-theme',
+  'ui-conversation',
+] as const
 
 async function readOptional(path: string): Promise<string | undefined> {
   try {
@@ -125,9 +134,8 @@ export class ModelSettingsProjection {
   async projectInto(targetHome: string): Promise<ModelProjectionResult> {
     const sourcePath = join(this.home, 'settings.yaml')
     const sourceContents = await readOptional(sourcePath)
-    if (sourceContents === undefined) return { changed: false, credentialRefs: ['DEEPSEEK_API_KEY'] }
     const targetPath = join(targetHome, 'settings.yaml')
-    const source = parseSettings(sourceContents, '共享模型设置')
+    const source = parseSettings(sourceContents ?? '{}\n', '共享设置')
     const sourceValue = source.toJS() as Record<string, unknown> | null
     const refs = credentialRefs(sourceValue)
     return withSettingsLock(targetPath, async () => {
@@ -138,7 +146,7 @@ export class ModelSettingsProjection {
         editable.commentBefore = target.commentBefore
         editable.comment = target.comment
       }
-      for (const namespace of MODEL_NAMESPACES) {
+      for (const namespace of SHARED_NAMESPACES) {
         if (sourceValue && Object.prototype.hasOwnProperty.call(sourceValue, namespace)) {
           editable.setIn([namespace], structuredClone(sourceValue[namespace]))
         } else {

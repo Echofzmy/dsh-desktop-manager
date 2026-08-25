@@ -9,7 +9,7 @@ const roots: string[] = []
 afterEach(async () => Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))))
 
 describe('ModelSettingsProjection', () => {
-  it('projects only model namespaces and points DSH at one shared native credential file', async () => {
+  it('projects reviewed shared settings and points DSH at one shared native credential file', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-model-settings-'))
     roots.push(root)
     const projection = new ModelSettingsProjection(root)
@@ -31,11 +31,19 @@ describe('ModelSettingsProjection', () => {
       '  provider: sub2api',
       '  model: custom-chat',
       'ui-theme:',
-      '  theme: dark',
+      '  preference: dark',
+      'permission:',
+      '  defaultPreset: workspace-write',
+      'agent-presets:',
+      '  default: default',
+      'locale:',
+      '  preference: zh',
+      'ui-conversation:',
+      '  busyEnter: steer',
       '',
     ].join('\n'))
     await writeFile(join(projection.home, '.credentials.yaml'), 'version: 1\nrefs:\n  SUB2API_API_KEY: secret-value\n', { mode: 0o600 })
-    await writeFile(join(targetHome, 'settings.yaml'), 'agent-default-model:\n  provider: local\n  model: retained\nui-theme:\n  theme: light\n')
+    await writeFile(join(targetHome, 'settings.yaml'), 'agent-default-model:\n  provider: local\n  model: retained\nui-theme:\n  preference: light\nui-onboarding:\n  welcomeNoticeVersion: local\nworkspace-local:\n  recent: /tmp/project\n')
 
     await expect(projection.projectInto(targetHome)).resolves.toMatchObject({ changed: true })
 
@@ -44,7 +52,13 @@ describe('ModelSettingsProjection', () => {
       'llm-deepseek': { baseURL: 'https://api.deepseek.example' },
       'llm-pi-ai': { providers: { sub2api: { apiKeyEnv: 'SUB2API_API_KEY', models: [{ id: 'custom-chat' }] } } },
       'agent-default-model': { provider: 'sub2api', model: 'custom-chat' },
-      'ui-theme': { theme: 'light' },
+      'ui-theme': { preference: 'dark' },
+      permission: { defaultPreset: 'workspace-write' },
+      'agent-presets': { default: 'default' },
+      locale: { preference: 'zh' },
+      'ui-conversation': { busyEnter: 'steer' },
+      'ui-onboarding': { welcomeNoticeVersion: 'local' },
+      'workspace-local': { recent: '/tmp/project' },
     })
     expect(JSON.stringify(result)).not.toContain('secret-value')
     const overlay = parse(await readFile(projection.overlayPath, 'utf8'))
@@ -84,6 +98,22 @@ describe('ModelSettingsProjection', () => {
     })
   })
 
+  it('treats a missing shared settings document as an empty authoritative profile', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-model-settings-missing-'))
+    roots.push(root)
+    const projection = new ModelSettingsProjection(root)
+    const targetHome = join(root, 'environment-home')
+    await projection.initialize()
+    await mkdir(targetHome)
+    await writeFile(join(targetHome, 'settings.yaml'), 'permission:\n  defaultPreset: danger-full-access\nui-theme:\n  preference: dark\nworkspace-local:\n  recent: /tmp/project\n')
+
+    await expect(projection.projectInto(targetHome)).resolves.toEqual({ changed: true, credentialRefs: ['DEEPSEEK_API_KEY'] })
+
+    expect(parse(await readFile(join(targetHome, 'settings.yaml'), 'utf8'))).toEqual({
+      'workspace-local': { recent: '/tmp/project' },
+    })
+  })
+
   it('serializes with DSH settings writers and re-reads unrelated changes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-model-settings-lock-'))
     roots.push(root)
@@ -94,17 +124,17 @@ describe('ModelSettingsProjection', () => {
     await writeFile(join(projection.home, 'settings.yaml'), 'llm-pi-ai:\n  providers: {}\n')
     const target = join(targetHome, 'settings.yaml')
     const lock = `${target}.lock`
-    await writeFile(target, 'ui-theme:\n  theme: light\n')
+    await writeFile(target, 'workspace-local:\n  recent: /tmp/light\n')
     await writeFile(lock, 'other-writer\n', { flag: 'wx' })
 
     const pending = projection.projectInto(targetHome)
     await new Promise(resolve => setTimeout(resolve, 50))
-    await writeFile(target, 'ui-theme:\n  theme: dark\n')
+    await writeFile(target, 'workspace-local:\n  recent: /tmp/dark\n')
     await rm(lock)
     await pending
 
     expect(parse(await readFile(target, 'utf8'))).toEqual({
-      'ui-theme': { theme: 'dark' },
+      'workspace-local': { recent: '/tmp/dark' },
       'llm-pi-ai': { providers: {} },
     })
   })

@@ -48,9 +48,9 @@
 
 工作区（Workspace）：用户在 DSH 新建会话时选择的项目目录，是该会话中 Agent 读取和修改文件的主要范围。它不属于管理器实例配置。
 
-环境（Environment）：该实例的数据根目录，即 DSH_HOME。存放 Profile、会话、附件和环境自己的设置；管理器启动前把共享的三个模型 namespace 合并进该设置文件。环境分为生产、独立、克隆三类，见第 8 节。
+环境（Environment）：该实例的数据根目录，即 DSH_HOME。存放 Profile、会话、附件和环境自己的设置；管理器启动前把共享模型、未来会话默认值和常用 UI 偏好合并进该设置文件。环境分为生产、独立、克隆三类，见第 8 节。
 
-模型配置（Model Configuration）：管理器专属的 DSH_HOME 和内部 Web Host。用户通过完整的 DSH 原生“设置 → 模型”页面维护 provider、凭据和默认模型；它不属于任何业务实例或项目工作区。
+统一配置（Unified Configuration）：管理器专属的 DSH_HOME 和内部 Web Host。用户通过 DSH 原生“设置”的 General 与 Models 页面维护 provider、凭据、默认模型、默认权限和常用偏好；Host 隐藏并禁用工作区、会话与聊天界面，不属于任何业务实例或项目工作区。
 
 实例（Instance）：一个可运行的 DSH 服务，由一个运行版本和一个环境组合而成。管理器为它创建独立的内部启动目录，并在每次启动时自动分配端口；内部目录只满足进程 `cwd` 要求，不代表用户项目。一个运行版本可以同时有多个实例，也可以只有零个。
 
@@ -66,7 +66,7 @@
 
 环境管理：每个实例默认使用独立 DSH_HOME；可以创建空环境、注册生产环境，或从现有环境克隆完整副本。不同版本使用各自副本即可并行运行，克隆后产生的会话历史独立演化且不自动合并。管理器禁止自己监督的两个运行实例并发写同一规范化环境路径。
 
-模型管理：在管理器专属的回环 DSH Web Host 中复用原生模型设置、模型发现和 credential 写入逻辑；将 provider 与默认模型应用到所有实例，同时保持其他环境设置隔离。
+统一配置：在管理器专属的回环 DSH Web Host 中复用原生 General、Models 和 credential 写入逻辑；将共享 provider、未来会话默认值和常用偏好应用到新启动实例，同时保持工作区与会话状态隔离。
 
 切换与回退：把实例提升为新的生产默认版本；在提升失败时同时回退运行版本与环境数据。
 
@@ -76,7 +76,7 @@
 
 应用采用与 DSH Web 一致的三栏工作台：左侧导航、中心工作面、可选右侧详情栏。主面为白色，侧栏使用近白背景；近黑胶囊按钮承担主操作，DeepSeek 蓝只用于选中、进行中与业务强调，绿色只表示明确成功。
 
-左侧栏固定包含品牌、新建实例、概览、运行时、模型、实例列表与底部设置入口。实例以状态点、名称和中文状态显示，不再使用顶部浏览器标签。中心区在概览、运行时预检、模型配置和实例 Web GUI 之间切换；右侧详情栏用于日志，不覆盖中心工作流。
+左侧栏固定包含品牌、新建实例、概览、运行时、统一配置、实例列表与底部设置入口。实例以状态点、名称和中文状态显示，不再使用顶部浏览器标签。中心区在概览、运行时预检、统一配置和实例 Web GUI 之间切换；右侧详情栏用于日志，不覆盖中心工作流。
 
 产品文案使用中文，动作短而直接，例如“新建实例”“注册运行时”“创建环境”“重新预检”“查看日志”。内部枚举必须映射为“启动中”“运行中”“停止中”“已停止”“失败”，不直接暴露英文状态。
 
@@ -100,11 +100,11 @@
 
 嵌入视图按实例使用独立 Electron partition。自动端口变化时销毁旧 origin 绑定并重建视图；切离实例时取消尚未完成的异步展示，旧 load 不得覆盖概览或另一个实例。加载错误必须反馈到宿主错误栏，不显示无诊断空白。
 
-### 5.4 模型工作面
+### 5.4 统一配置工作面
 
-模型工作面使用经过 receipt、READY、manifest 与文件清单验证的 bundled/downloaded 官方运行时启动一个 `<应用数据目录>/model-configuration/home` 内部 DSH 实例，并在隔离 `WebContentsView` 中加载完整 DSH Web 客户端；任意注册的 local runtime 不会获得共享凭据 Home。首次配置保留 DSH 自己的 API Key onboarding；配置存在时管理器尝试打开原生“设置 → 模型”，工具栏保留重新打开模型设置的图标命令并显示启动、失败、重试和运行中实例需重启状态。管理器不复制或维护 provider 目录、自定义 provider 表单、协议兼容参数、模型发现及 credential UI。内部 Host 由父进程 watchdog 包裹；管理器异常消失时先触发 DSH 优雅退出，超时后清理整个隐藏进程组。
+统一配置工作面使用经过 receipt、READY、manifest 与文件清单验证的 bundled/downloaded 官方运行时启动一个 `<应用数据目录>/model-configuration/home` 内部 DSH 实例，并在隔离 `WebContentsView` 中加载 DSH Web 客户端。主进程在视图挂载前注入固定的配置专用样式和事件闸门：应用根保持 hidden 且禁用 pointer events，只允许 onboarding 与原生 Settings dialog 可见交互；Settings 外层的 Escape、关闭按钮与遮罩点击被拦截，嵌套 provider 编辑器仍可正常关闭。任意注册的 local runtime 不会获得共享凭据 Home。首次配置保留 DSH 自己的 API Key onboarding；配置存在时管理器打开原生 Settings 的 General 页面，用户可在原生导航中切换 Models，工具栏保留重新打开统一设置的图标命令并显示启动、失败、重试和运行中实例需重启状态。管理器不复制或维护 provider 目录、自定义 provider 表单、协议兼容参数、模型发现、credential、权限或偏好 UI。内部 Host 由父进程 watchdog 包裹；管理器异常消失时先触发 DSH 优雅退出，超时后清理整个隐藏进程组。
 
-共享 settings 只包含 `llm-deepseek`、`llm-pi-ai` 与 `agent-default-model`。实例启动前，管理器使用与 DSH settings-file 相同的 `<settings>.lock` 协议，在持锁后重新读取并原子合并这三个 namespace；共享源未保存默认模型时删除目标旧默认，让 runtime composition 回到 DeepSeek 官方默认。主题、权限、插件、会话及其余 namespace 保留实例自己的值。共享 Key 只由 DSH credential provider 写入管理器专属 `.credentials.yaml`，实例通过固定 overlay 直接引用，不复制明文。Provider 和默认模型变更在运行中实例下次重启时应用；credential provider 自己的 watcher 仍可实时观察 Key 轮换。
+共享 settings 包含 `llm-deepseek`、`llm-pi-ai`、`agent-default-model`、`permission`、`agent-presets`、`locale`、`ui-theme` 与 `ui-conversation`。实例启动前，管理器使用与 DSH settings-file 相同的 `<settings>.lock` 协议，在持锁后重新读取并原子合并这些 namespace；共享源未保存默认模型时删除目标旧默认，让 runtime composition 回到 DeepSeek 官方默认。默认模型、默认权限和默认 Agent preset 只作用于之后创建的会话，不改写已有会话的模型、权限或 preset；onboarding、工作区、会话、日志、缓存及其余 namespace 保留实例自己的值。共享 Key 只由 DSH credential provider 写入管理器专属 `.credentials.yaml`，实例通过固定 overlay 直接引用，不复制明文。统一配置变更在运行中实例下次重启时应用；credential provider 自己的 watcher 仍可实时观察 Key 轮换。
 
 ### 5.5 日志详情
 
@@ -114,7 +114,7 @@
 
 运行时工作面列出路径、版本、Git 状态和全部预检项，支持本地源码 checkout 与已发布 `@deepseek-ai/dsh` 包布局。固定文案和修复建议使用中文，路径、版本与底层原始错误保持原值。
 
-设置入口位于侧栏底部，采用 DSH 同款两列设置面板，可选择实例在内嵌视图或外部浏览器中打开，并控制启动时官方更新检查。中文原生应用菜单提供新建实例、概览、运行时、模型、设置、编辑和窗口命令；默认运行时、数据位置及日志路径在对应管理工作面直接显示。
+设置入口位于侧栏底部，采用 DSH 同款两列设置面板，可选择实例在内嵌视图或外部浏览器中打开，并控制启动时官方更新检查。中文原生应用菜单提供新建实例、概览、运行时、统一配置、设置、编辑和窗口命令；默认运行时、数据位置及日志路径在对应管理工作面直接显示。
 
 ## 6. 运行版本
 
@@ -178,7 +178,7 @@ node <runtime>/apps/cli/lib/bin.js web --patch <应用数据目录>/model-config
 
 ## 7. 实例生命周期
 
-启动：检查预检结果；检查环境未被其他受管实例占用；在实例停止状态下结构化投影共享模型 namespace；生成只引用共享 credential 文件的固定 patch；剔除会遮蔽受管 credential ref 的继承环境变量；分配日志文件；以回环 host 和自动端口启动进程；解析 DSH readiness 输出并执行 HTTP 确认。投影文件无法解析、目标 runtime 不接受配置或共享 credential 权限不安全时启动失败并保留诊断，不发布运行中状态。
+启动：检查预检结果；检查环境未被其他受管实例占用；在实例停止状态下结构化投影共享 settings namespace；生成只引用共享 credential 文件的固定 patch；剔除会遮蔽受管 credential ref 的继承环境变量；分配日志文件；以回环 host 和自动端口启动进程；解析 DSH readiness 输出并执行 HTTP 确认。投影文件无法解析、目标 runtime 不接受配置或共享 credential 权限不安全时启动失败并保留诊断，不发布运行中状态。
 
 就绪检查：以 `dsh web:` 输出为服务组合完成的权威信号，不能把端口已 bind 或启动中间态的 HTTP 404 当作就绪。超时或提前退出均标记失败并保留日志。
 
@@ -194,7 +194,7 @@ macOS 关闭管理器窗口只隐藏界面，Electron 主进程继续监督运�
 
 ## 8. 环境与数据
 
-DSH_HOME 由管理器通过环境变量注入，用于隔离 DSH 的 Profile、会话、附件和非模型设置；它不是 Agent 文件访问沙箱，实例仍会按工具策略读写 Workspace 和其他获准路径。三个模型 namespace 在每次启动前由管理器源配置覆盖，共享 provider credential 存放在模型配置 Home，由实例的 DSH credential provider 直接解析。
+DSH_HOME 由管理器通过环境变量注入，用于隔离 DSH 的 Profile、会话、附件和实例专属设置；它不是 Agent 文件访问沙箱，实例仍会按工具策略读写 Workspace 和其他获准路径。八个审核过的共享 namespace 在每次启动前由管理器源配置覆盖，共享 provider credential 存放在统一配置 Home，由实例的 DSH credential provider 直接解析。
 
 生产环境：默认可注册 `~/.dsh`，与现有使用保持一致。同一时刻只有一个受管实例可以使用同一规范化生产环境路径。
 
@@ -212,7 +212,7 @@ DSH_HOME 由管理器通过环境变量注入，用于隔离 DSH 的 Profile、�
 
 ## 9. 默认版本、提升与回退
 
-默认版本是新建实例的预选运行版本，不自动切换运行中实例，不自动替换生产环境。共享模型配置是独立于环境备份的全局操作状态；生产提升和回退在下一次启动时应用当时的共享 provider/default/credential 配置，不把 Key 固化进 promotion 记录。模型配置变更后，生产候选需要重新启动并完成实际对话确认再提升。
+默认版本是新建实例的预选运行版本，不自动切换运行中实例，不自动替换生产环境。统一配置是独立于环境备份的全局操作状态；生产提升和回退在下一次启动时应用当时的共享 provider、未来会话默认值、常用偏好与 credential 配置，不把 Key 固化进 promotion 记录。统一配置变更后，生产候选需要重新启动并完成实际对话确认再提升。
 
 提升流程：候选实例在隔离端口与隔离环境中完成构建、启动、就绪检查，并由用户实际发起一次测试对话；本地候选必须保持测试时的干净 commit 与完整依赖闭包指纹，再复制为管理器私有、不可构建的 production snapshot 并复核身份；停止生产实例；备份生产环境；紧邻 spawn 重新验证目标身份。启动先持久化 launch intent，macOS detached process group 在一次性随机 gate 后等待，PID 状态提交成功才允许 exec DSH。确认启动与对话正常后把 snapshot 记录为新的默认版本，并保留上一运行版本与备份。任何恢复失败都保持 recovery-required 隔离，普通 PID/端口恢复不能解除。
 
@@ -232,7 +232,7 @@ DSH_HOME 由管理器通过环境变量注入，用于隔离 DSH 的 Profile、�
 
 WebContents 安全配置：nodeIntegration 关闭，contextIsolation 开启；限制页面只能导航到 127.0.0.1 的受管端口；实例页面与管理器 IPC 隔离；不向 DSH 页面注入 Node 能力。DSH 自身只绑定回环地址，管理器不自动开放 LAN 端口。
 
-凭据策略：provider Key 只通过管理器模型工作面中的 DSH 原生 `credentials.set` 单向写入 `<应用数据目录>/model-configuration/home/.credentials.yaml`。DSH 负责 `0700` 目录、`0600` 文件、跨进程锁与原子更新；API 的 describe 路径只返回 configured/source/writable，不返回 value。管理器状态、renderer snapshot、IPC 响应和日志不保存或展示 Key。实例通过只含 credential provider 路径的固定 `--patch` 引用同一文件，并从同一次模型 settings 投影快照删除实际 `apiKeyEnv` 继承变量，避免环境层优先级使受管 Key 被遮蔽，同时保留无关工具 Token。模型配置 Host 只继承启动所需的最小系统与网络环境，因此后来新增的任意合法 credential ref 也不会被宿主环境遮蔽。业务实例的原生 credential API 可以更新共享文件，这是“同一用户的受管 runtime 属于同一信任域”的产品语义；同一 UID 下的恶意 runtime 也能主动读取用户文件，因此 partition 与 IPC 隔离只防止页面意外越权，不构成针对恶意本机代码的密钥隔离。只允许模型配置 Host 使用完整性验证过的官方 runtime，用户只应启动可信的业务 runtime。官方安装使用固定 registry、独立临时 HOME/cache/userconfig，删除 npm token、auth、proxy 与 Node 注入环境，并以 `--ignore-scripts` 禁止 lifecycle 代码；lockfile 除根条目外的每个包都必须具有固定 HTTPS registry URL 与 sha512 integrity。receipt 强制绑定 schema、source、registry、platform 和当前架构；发现、复用、碰撞发布与每次启动都重新核对 receipt、READY、完整文件清单及实际文件。
+凭据策略：provider Key 只通过管理器统一配置工作面中的 DSH 原生 `credentials.set` 单向写入 `<应用数据目录>/model-configuration/home/.credentials.yaml`。DSH 负责 `0700` 目录、`0600` 文件、跨进程锁与原子更新；API 的 describe 路径只返回 configured/source/writable，不返回 value。管理器状态、renderer snapshot、IPC 响应和日志不保存或展示 Key。实例通过只含 credential provider 路径的固定 `--patch` 引用同一文件，并从同一次 provider settings 投影快照删除实际 `apiKeyEnv` 继承变量，避免环境层优先级使受管 Key 被遮蔽，同时保留无关工具 Token。统一配置 Host 只继承启动所需的最小系统与网络环境，并明确保留启动器生成的 `DSH_HOME` 与 `ELECTRON_RUN_AS_NODE`；删除前者会使 DSH 回退到用户真实 Home，属于隔离失败。业务实例的原生 credential API 可以更新共享文件，这是“同一用户的受管 runtime 属于同一信任域”的产品语义；同一 UID 下的恶意 runtime 也能主动读取用户文件，因此 partition 与 IPC 隔离只防止页面意外越权，不构成针对恶意本机代码的密钥隔离。只允许统一配置 Host 使用完整性验证过的官方 runtime，用户只应启动可信的业务 runtime。官方安装使用固定 registry、独立临时 HOME/cache/userconfig，删除 npm token、auth、proxy 与 Node 注入环境，并以 `--ignore-scripts` 禁止 lifecycle 代码；lockfile 除根条目外的每个包都必须具有固定 HTTPS registry URL 与 sha512 integrity。receipt 强制绑定 schema、source、registry、platform 和当前架构；发现、复用、碰撞发布与每次启动都重新核对 receipt、READY、完整文件清单及实际文件。
 
 ## 11. 仓库现状
 

@@ -2,7 +2,6 @@ import {
   Activity,
   Archive,
   ArchiveRestore,
-  Bot,
   Boxes,
   Check,
   CircleStop,
@@ -21,6 +20,7 @@ import {
   RotateCw,
   Settings as SettingsIcon,
   ShieldCheck,
+  SlidersHorizontal,
   TerminalSquare,
   Trash2,
   Wrench,
@@ -98,7 +98,7 @@ export function App(): ReactNode {
       <nav className="sidebar-nav" aria-label="主导航">
         <button className={page.kind === 'home' ? 'active' : ''} onClick={() => navigate({ kind: 'home' })}><LayoutDashboard size={17} />概览</button>
         <button className={page.kind === 'runtimes' ? 'active' : ''} onClick={() => navigate({ kind: 'runtimes' })}><Boxes size={17} />运行时</button>
-        <button className={page.kind === 'models' ? 'active' : ''} onClick={() => navigate({ kind: 'models' })}><Bot size={17} />模型</button>
+        <button className={page.kind === 'models' ? 'active' : ''} onClick={() => navigate({ kind: 'models' })}><SlidersHorizontal size={17} />统一配置</button>
       </nav>
       <div className="sidebar-section"><div className="sidebar-section-title"><span>实例</span><span>{snapshot.instances.length}</span></div><div className="sidebar-instances">
         {!snapshot.instances.length && <p>暂无实例</p>}
@@ -130,7 +130,7 @@ export function App(): ReactNode {
   </div>
 }
 
-type ModelPhase = 'idle' | 'starting' | 'blocked' | 'models' | 'unavailable' | 'failed'
+type ModelPhase = 'idle' | 'starting' | 'blocked' | 'settings' | 'unavailable' | 'failed'
 function ModelsPage({ hasRuntime, runningCount, obscured, onError }: { hasRuntime: boolean; runningCount: number; obscured: boolean; onError: (message: string) => void }): ReactNode {
   const host = useRef<HTMLDivElement>(null)
   const requestGeneration = useRef(0)
@@ -143,7 +143,7 @@ function ModelsPage({ hasRuntime, runningCount, obscured, onError }: { hasRuntim
     const rect = element.getBoundingClientRect()
     void window.manager.showModelConfiguration({ x: rect.x, y: rect.y, width: rect.width, height: rect.height }, openSettings).then(result => {
       if (!openSettings || generation !== requestGeneration.current) return
-      if (result === 'opened' || result === 'already-open') setPhase('models')
+      if (result === 'opened' || result === 'already-open') setPhase('settings')
       else if (result === 'dialog-blocked') setPhase('blocked')
       else setPhase('unavailable')
     }).catch(reason => {
@@ -171,14 +171,14 @@ function ModelsPage({ hasRuntime, runningCount, obscured, onError }: { hasRuntim
 
   const status = !hasRuntime
     ? '需要经过完整性验证的官方运行时'
-    : phase === 'starting' ? '正在启动模型配置…'
-      : phase === 'blocked' ? '请先完成当前 DSH 对话框，然后重新打开模型设置'
-        : phase === 'unavailable' ? '无法自动定位模型页，请在 DSH 设置中选择“模型”'
-          : phase === 'failed' ? '模型配置启动失败'
-            : runningCount ? `${runningCount} 个运行中实例将在重启后应用提供方变更`
-              : 'DSH 原生提供方与凭据配置'
+    : phase === 'starting' ? '正在启动统一配置…'
+      : phase === 'blocked' ? '请先完成当前 DSH 对话框，然后重新打开统一设置'
+        : phase === 'unavailable' ? '无法自动定位统一设置，请在 DSH 设置中选择相应页面'
+          : phase === 'failed' ? '统一配置启动失败'
+            : runningCount ? `${runningCount} 个运行中实例将在重启后应用统一配置变更`
+              : '模型、权限与常用偏好'
   const inactive = !hasRuntime || phase === 'idle' || phase === 'starting' || phase === 'failed'
-  return <div className="instance-page"><header className="instance-toolbar"><div className="instance-title"><span className="environment-icon"><Bot size={17} /></span><span><strong>模型</strong><small>{status}</small></span></div><div className="toolbar-actions"><IconButton label="打开模型设置" disabled={!hasRuntime || phase === 'starting'} onClick={() => show()}><SettingsIcon size={17} /></IconButton></div></header><div className={`web-host${inactive ? ' inactive' : ''}`} ref={host}>{inactive && <div>{phase === 'failed' ? <Wrench size={28} /> : <Boxes size={28} />}<strong>{!hasRuntime ? '没有可用的官方运行时' : phase === 'failed' ? '无法打开模型配置' : '正在启动模型配置'}</strong><span>{!hasRuntime ? '安装或修复内置、下载的官方 DSH 后重试。' : phase === 'failed' ? '检查顶部错误后重试。' : '正在等待 DSH Web Host 就绪。'}</span>{phase === 'failed' && <button className="button outline small" onClick={() => show()}>重试</button>}</div>}</div></div>
+  return <div className="instance-page"><header className="instance-toolbar"><div className="instance-title"><span className="environment-icon"><SlidersHorizontal size={17} /></span><span><strong>统一配置</strong><small>{status}</small></span></div><div className="toolbar-actions"><IconButton label="打开统一设置" disabled={!hasRuntime || phase === 'starting'} onClick={() => show()}><SettingsIcon size={17} /></IconButton></div></header><div className={`web-host${inactive ? ' inactive' : ''}`} ref={host}>{inactive && <div>{phase === 'failed' ? <Wrench size={28} /> : <Boxes size={28} />}<strong>{!hasRuntime ? '没有可用的官方运行时' : phase === 'failed' ? '无法打开统一配置' : '正在启动统一配置'}</strong><span>{!hasRuntime ? '安装或修复内置、下载的官方 DSH 后重试。' : phase === 'failed' ? '检查顶部错误后重试。' : '正在等待 DSH 设置就绪。'}</span>{phase === 'failed' && <button className="button outline small" onClick={() => show()}>重试</button>}</div>}</div></div>
 }
 
 function HomePage({ snapshot, busy, onModal, onOpen, onRun, onLog, onConfirm, onUseTemplate }: { snapshot: ManagerSnapshot; busy: string | null; onModal: (modal: Modal) => void; onOpen: (id: string) => void; onRun: Runner; onLog: (instance: InstanceRecord) => Promise<void>; onConfirm: (confirmation: Confirmation) => void; onUseTemplate: (id: string) => void }): ReactNode {

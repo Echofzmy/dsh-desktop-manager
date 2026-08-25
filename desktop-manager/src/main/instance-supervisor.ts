@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { embeddedNodeLaunch, systemNodeLaunch } from './embedded-node.js'
 import type { EnvironmentRecord, InstanceLog, InstanceRecord, RuntimeRecord } from '../shared/types.js'
 
+const GENERATED_LAUNCH_ENVIRONMENT_KEYS = new Set(['dsh_home', 'electron_run_as_node'])
+
 const PARENT_WATCH_SCRIPT = `
 const { spawn } = require('node:child_process')
 const parentPid = Number(process.argv[1])
@@ -180,7 +182,8 @@ export class InstanceSupervisor {
       const nodeArguments = runtime.source === 'local' ? [] : ['--expose-internals']
       const removed = new Set(options.removeEnvironmentKeys?.map(key => key.toLowerCase()) ?? [])
       for (const key of Object.keys(launch.env)) {
-        if (removed.has(key.toLowerCase())) delete launch.env[key]
+        const normalized = key.toLowerCase()
+        if (removed.has(normalized) && !GENERATED_LAUNCH_ENVIRONMENT_KEYS.has(normalized)) delete launch.env[key]
       }
       const runtimeArguments = [
         ...nodeArguments,

@@ -65,7 +65,7 @@ describe('InstanceSupervisor', () => {
     await writeFile(runtime.preflight.entryPath!, `
 const fs = require('node:fs')
 const http = require('node:http')
-fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ argv: process.argv.slice(2), shadow: process.env.SUB2API_API_KEY, unrelated: process.env.GITHUB_TOKEN }))
+fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ argv: process.argv.slice(2), shadow: process.env.SUB2API_API_KEY, unrelated: process.env.GITHUB_TOKEN, home: process.env.DSH_HOME }))
 const server = http.createServer((_request, response) => response.end('ok'))
 server.listen(0, '127.0.0.1', () => console.log('dsh web: http://127.0.0.1:' + server.address().port))
 `)
@@ -77,12 +77,13 @@ server.listen(0, '127.0.0.1', () => console.log('dsh web: http://127.0.0.1:' + s
     try {
       const running = await supervisor.start(instance, runtime, environment, {
         patchPaths: ['/manager/model-credentials.yml'],
-        removeEnvironmentKeys: ['sub2api_api_key'],
+        removeEnvironmentKeys: ['sub2api_api_key', 'dsh_home', 'electron_run_as_node'],
       })
-      const result = JSON.parse(await readFile(capture, 'utf8')) as { argv: string[]; shadow?: string; unrelated?: string }
+      const result = JSON.parse(await readFile(capture, 'utf8')) as { argv: string[]; shadow?: string; unrelated?: string; home?: string }
       expect(result.argv).toEqual(['web', '--patch', '/manager/model-credentials.yml', '--host', '127.0.0.1', '--port', '0', '--no-open'])
       expect(result.shadow).toBeUndefined()
       expect(result.unrelated).toBe('must-reach-child')
+      expect(result.home).toBe(environment.path)
       await supervisor.stop(running, true)
     } finally {
       if (previous === undefined) delete process.env.SUB2API_API_KEY

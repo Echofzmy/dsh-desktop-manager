@@ -7,6 +7,7 @@ const INTERNAL_INSTANCE_ID = 'internal-model-configuration'
 const INTERNAL_ENVIRONMENT_ID = 'internal-model-configuration-home'
 const MODEL_HOST_ENVIRONMENT_ALLOWLIST = new Set([
   'HOME', 'PATH', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'USER', 'LOGNAME', 'SHELL', 'TERM',
+  'DSH_HOME', 'ELECTRON_RUN_AS_NODE',
   'NO_PROXY', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
 ])
 
@@ -30,7 +31,7 @@ export class ModelConfigurationService {
   }
 
   reserveRuntime(runtimeId: string): void {
-    if (this.#reservedRuntimeId && this.#reservedRuntimeId !== runtimeId) throw new Error('另一个运行版本正在用于模型配置。')
+    if (this.#reservedRuntimeId && this.#reservedRuntimeId !== runtimeId) throw new Error('另一个运行版本正在用于统一配置。')
     this.#reservedRuntimeId = runtimeId
   }
 
@@ -47,11 +48,11 @@ export class ModelConfigurationService {
     if (this.#pending && this.#pendingIntent === this.#intent) return this.#pending
     const intent = ++this.#intent
     const operation = this.#queue.then(async () => {
-      if (intent !== this.#intent) throw new Error('模型配置页面已经关闭。')
+      if (intent !== this.#intent) throw new Error('统一配置页面已经关闭。')
       const instance = await this.#start(runtime)
       if (intent === this.#intent) return instance
       if (this.#supervisor.isRunning(INTERNAL_INSTANCE_ID)) await this.#supervisor.stop(instance)
-      throw new Error('模型配置页面已经关闭。')
+      throw new Error('统一配置页面已经关闭。')
     })
     const settled = operation.finally(() => {
       if (this.#pending === settled) this.#pending = undefined
@@ -70,14 +71,14 @@ export class ModelConfigurationService {
     const createdAt = new Date().toISOString()
     const environment: EnvironmentRecord = {
       id: INTERNAL_ENVIRONMENT_ID,
-      name: '共享模型配置',
+      name: '共享统一配置',
       kind: 'isolated',
       path: this.#projection.home,
       createdAt,
     }
     this.#instance = {
       id: INTERNAL_INSTANCE_ID,
-      name: '模型配置',
+      name: '统一配置',
       runtimeId: runtime.id,
       workspacePath: this.#projection.workspacePath,
       environmentId: environment.id,
