@@ -21,13 +21,13 @@ import {
   RotateCw,
   Settings as SettingsIcon,
   ShieldCheck,
-  Sparkles,
   TerminalSquare,
   Trash2,
   Wrench,
   X,
 } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import appIcon from '../../../build/icon-source/dsh-1024.png'
 import type { EnvironmentRecord, InstanceRecord, ManagerSnapshot, OfficialUpdateInfo, RuntimeRecord, RuntimeTaskKind } from '../../shared/types'
 
 const EMPTY: ManagerSnapshot = {
@@ -93,7 +93,7 @@ export function App(): ReactNode {
   return <div className={`app-shell ${log ? 'with-details' : ''}`}>
     <aside className="sidebar">
       <div className="drag-region" />
-      <div className="brand-row"><span className="brand-mark"><Sparkles size={18} /></span><span><strong>DeepSeek</strong><small>DSH 管理器</small></span></div>
+      <div className="brand-row"><img className="brand-icon" src={appIcon} alt="" aria-hidden="true" /><span><strong>DeepSeek</strong><small>DSH 管理器</small></span></div>
       <button className="new-instance" onClick={() => setModal('instance')} disabled={!snapshot.runtimes.length || !snapshot.environments.length}><Plus size={17} />新建实例</button>
       <nav className="sidebar-nav" aria-label="主导航">
         <button className={page.kind === 'home' ? 'active' : ''} onClick={() => navigate({ kind: 'home' })}><LayoutDashboard size={17} />概览</button>

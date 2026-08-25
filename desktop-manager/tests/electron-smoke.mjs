@@ -62,6 +62,8 @@ try {
 
   const apiReady = await page.evaluate(() => typeof window.manager?.getSnapshot === 'function')
   if (!apiReady) throw new Error('Manager preload API is unavailable')
+  const brandIcon = await page.locator('.brand-icon').evaluate(image => ({ complete: image.complete, naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight }))
+  if (!brandIcon.complete || brandIcon.naturalWidth !== 1024 || brandIcon.naturalHeight !== 1024) throw new Error(`Application brand icon did not load: ${JSON.stringify(brandIcon)}`)
 
   const secondProcess = spawn(executablePath, process.env.DSH_MANAGER_EXECUTABLE ? [] : ['.'], {
     cwd: projectRoot,
