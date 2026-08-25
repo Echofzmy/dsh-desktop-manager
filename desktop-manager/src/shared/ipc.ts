@@ -33,6 +33,8 @@ export const IPC = {
   directoryChoose: 'manager:directory:choose',
   externalOpen: 'manager:external:open',
   viewShow: 'manager:view:show',
+  modelViewShow: 'manager:model-view:show',
+  modelViewClose: 'manager:model-view:close',
   viewHide: 'manager:view:hide',
   snapshotChanged: 'manager:snapshot:changed',
   menuCommand: 'manager:menu:command',

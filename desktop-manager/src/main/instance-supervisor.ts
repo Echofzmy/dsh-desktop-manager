@@ -6,6 +6,40 @@ import { join } from 'node:path'
 import { embeddedNodeLaunch, systemNodeLaunch } from './embedded-node.js'
 import type { EnvironmentRecord, InstanceLog, InstanceRecord, RuntimeRecord } from '../shared/types.js'
 
+const PARENT_WATCH_SCRIPT = `
+const { spawn } = require('node:child_process')
+const parentPid = Number(process.argv[1])
+const executable = process.argv[2]
+const child = spawn(executable, process.argv.slice(3), { env: process.env, stdio: 'inherit' })
+let stopping = false
+let forceTimer
+const stop = signal => {
+  if (stopping) return
+  stopping = true
+  try { child.kill(signal) } catch (error) { if (error.code !== 'ESRCH') throw error }
+  forceTimer = setTimeout(() => {
+    try {
+      if (process.platform === 'win32') child.kill('SIGKILL')
+      else process.kill(-process.pid, 'SIGKILL')
+    } catch (error) { if (error.code !== 'ESRCH') throw error }
+  }, 6000)
+  forceTimer.unref()
+}
+process.on('SIGTERM', () => stop('SIGTERM'))
+process.on('SIGINT', () => stop('SIGINT'))
+const parentTimer = setInterval(() => {
+  try { process.kill(parentPid, 0) } catch (error) { if (error.code === 'ESRCH') stop('SIGTERM') }
+}, 500)
+parentTimer.unref()
+child.on('error', error => { console.error(error); process.exitCode = 1 })
+child.on('exit', (code, signal) => {
+  clearInterval(parentTimer)
+  if (forceTimer) clearTimeout(forceTimer)
+  process.exitCode = code ?? (signal ? 1 : 0)
+  setImmediate(() => process.exit())
+})
+`
+
 interface ExitResult {
   code: number | null
   signal: NodeJS.Signals | null
@@ -75,6 +109,12 @@ function combinedError(message: string, errors: unknown[]): Error | undefined {
   return actual.length === 1 ? actual[0] : new AggregateError(actual, message)
 }
 
+export interface InstanceLaunchOptions {
+  patchPaths?: readonly string[]
+  removeEnvironmentKeys?: readonly string[]
+  watchParent?: boolean
+}
+
 export class InstanceSupervisor {
   readonly #logsRoot: string
   readonly #events: InstanceSupervisorEvents
@@ -96,7 +136,7 @@ export class InstanceSupervisor {
     throw new Error(`No available loopback port between ${start} and ${end}`)
   }
 
-  async start(instance: InstanceRecord, runtime: RuntimeRecord, environment: EnvironmentRecord): Promise<InstanceRecord> {
+  async start(instance: InstanceRecord, runtime: RuntimeRecord, environment: EnvironmentRecord, options: InstanceLaunchOptions = {}): Promise<InstanceRecord> {
     if (this.#running.has(instance.id)) throw new Error(`Instance ${instance.name} is already running`)
     if (!runtime.preflight.ready || !runtime.preflight.entryPath) throw new Error(`Runtime ${runtime.name} has not passed preflight`)
     const requestedPort = instance.automaticPort ? 0 : instance.port
@@ -138,18 +178,26 @@ export class InstanceSupervisor {
         ? systemNodeLaunch({ DSH_HOME: environment.path })
         : embeddedNodeLaunch({ DSH_HOME: environment.path })
       const nodeArguments = runtime.source === 'local' ? [] : ['--expose-internals']
+      const removed = new Set(options.removeEnvironmentKeys?.map(key => key.toLowerCase()) ?? [])
+      for (const key of Object.keys(launch.env)) {
+        if (removed.has(key.toLowerCase())) delete launch.env[key]
+      }
       const runtimeArguments = [
         ...nodeArguments,
         runtime.preflight.entryPath,
         'web',
+        ...(options.patchPaths?.flatMap(path => ['--patch', path]) ?? []),
         '--host', '127.0.0.1',
         '--port', String(requestedPort),
         '--no-open',
       ]
+      const watchedArguments = options.watchParent
+        ? ['-e', PARENT_WATCH_SCRIPT, String(process.pid), launch.executable, ...runtimeArguments]
+        : runtimeArguments
       const executable = launchGate ? '/bin/sh' : launch.executable
       const arguments_ = launchGate
-        ? ['-c', 'gate="$1"; shift; while [ ! -f "$gate" ]; do sleep 0.05; done; exec "$@"', 'dsh-launch', launchGate, launch.executable, ...runtimeArguments]
-        : runtimeArguments
+        ? ['-c', 'gate="$1"; shift; while [ ! -f "$gate" ]; do sleep 0.05; done; exec "$@"', 'dsh-launch', launchGate, launch.executable, ...watchedArguments]
+        : watchedArguments
       child = spawn(executable, arguments_, {
         cwd: instance.workspacePath,
         env: launch.env,

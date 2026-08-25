@@ -129,11 +129,27 @@ function registerIpc(): void {
     if (!instance) throw new Error('Instance does not exist')
     await views!.show(instance, assertBounds(rawBounds))
   })
+  handle(IPC.modelViewShow, async (_event, rawBounds: EmbeddedViewBounds, openSettings: boolean) => {
+    if (typeof openSettings !== 'boolean') throw new Error('无效的模型视图操作。')
+    try {
+      const instance = await requiredManager().ensureModelConfiguration()
+      await views!.show(instance, assertBounds(rawBounds))
+      if (!openSettings) return 'host-ready'
+      return views!.openModelSettings(instance.id)
+    } catch (error) {
+      if (error instanceof Error && error.message === '模型配置页面已经关闭。') return 'unavailable'
+      throw error
+    }
+  })
+  handle(IPC.modelViewClose, async () => {
+    views!.hide()
+    await requiredManager().stopModelConfiguration()
+  })
   handle(IPC.viewHide, () => views!.hide())
 }
 
 function installMenu(): void {
-  const send = (command: 'home' | 'runtimes' | 'settings' | 'new-instance'): void => {
+  const send = (command: 'home' | 'runtimes' | 'models' | 'settings' | 'new-instance'): void => {
     mainWindow?.show()
     mainWindow?.focus()
     mainWindow?.webContents.send(IPC.menuCommand, command)
@@ -141,7 +157,7 @@ function installMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === 'darwin' ? [{ label: 'DSH 管理器', submenu: [{ role: 'about' as const }, { type: 'separator' as const }, { label: '设置…', accelerator: 'CommandOrControl+,', click: () => send('settings') }, { type: 'separator' as const }, { role: 'hide' as const }, { role: 'hideOthers' as const }, { role: 'unhide' as const }, { type: 'separator' as const }, { role: 'quit' as const }] }] : []),
     { label: '文件', submenu: [{ label: '新建实例', accelerator: 'CommandOrControl+N', click: () => send('new-instance') }, { type: 'separator' }, ...(process.platform === 'darwin' ? [] : [{ role: 'quit' as const }])] },
-    { label: '前往', submenu: [{ label: '概览', accelerator: 'CommandOrControl+1', click: () => send('home') }, { label: '运行时', accelerator: 'CommandOrControl+2', click: () => send('runtimes') }, { label: '设置', accelerator: 'CommandOrControl+,', click: () => send('settings') }] },
+    { label: '前往', submenu: [{ label: '概览', accelerator: 'CommandOrControl+1', click: () => send('home') }, { label: '运行时', accelerator: 'CommandOrControl+2', click: () => send('runtimes') }, { label: '模型', accelerator: 'CommandOrControl+3', click: () => send('models') }, { label: '设置', accelerator: 'CommandOrControl+,', click: () => send('settings') }] },
     { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
     { label: '窗口', submenu: [{ role: 'minimize' }, { role: 'zoom' }, ...(process.platform === 'darwin' ? [{ type: 'separator' as const }, { role: 'front' as const }] : [])] },
   ]))

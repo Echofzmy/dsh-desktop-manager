@@ -1,5 +1,5 @@
 import { BrowserWindow, WebContentsView, session, shell, type Rectangle } from 'electron'
-import type { InstanceRecord } from '../shared/types.js'
+import type { InstanceRecord, ModelConfigurationViewResult } from '../shared/types.js'
 
 function managedUrl(instance: InstanceRecord): string {
   if (instance.status !== 'running' || instance.port <= 0) throw new Error('Instance is not ready for a Web view')
@@ -75,6 +75,31 @@ export class InstanceViewManager {
     this.#visibleId = instance.id
     this.#window.contentView.addChildView(view)
     view.setBounds(safeBounds(bounds, this.#window))
+  }
+
+  async openModelSettings(instanceId: string): Promise<ModelConfigurationViewResult> {
+    const view = this.#views.get(instanceId)
+    if (!view) throw new Error('Model configuration view is not loaded')
+    return view.webContents.executeJavaScript(`new Promise(resolve => {
+      const dialog = document.querySelector('[role="dialog"]')
+      if (dialog) {
+        const text = dialog.textContent || ''
+        resolve(text.includes('添加自定义提供方') || text.includes('Add custom provider') ? 'already-open' : 'dialog-blocked')
+        return
+      }
+      const labels = element => [element.getAttribute('aria-label'), element.getAttribute('title'), element.textContent].filter(Boolean).map(value => value.trim())
+      const find = names => [...document.querySelectorAll('button,[role="tab"],[role="menuitem"]')].find(element => labels(element).some(label => names.includes(label)))
+      let attempts = 0
+      const step = () => {
+        const models = find(['模型', 'Models'])
+        if (models) { models.click(); resolve('opened'); return }
+        find(['设置', 'Settings'])?.click()
+        attempts += 1
+        if (attempts >= 100) { resolve('unavailable'); return }
+        setTimeout(step, 100)
+      }
+      step()
+    })`, true) as Promise<ModelConfigurationViewResult>
   }
 
   hide(): void {

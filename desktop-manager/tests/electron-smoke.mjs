@@ -1,7 +1,8 @@
+import { randomUUID } from 'node:crypto'
 import { _electron as electron } from 'playwright-core'
 import electronPath from 'electron'
-import { mkdtemp, mkdir, rm } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { basename, join, relative } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createServer } from 'node:net'
 import { spawn } from 'node:child_process'
@@ -9,10 +10,38 @@ import { spawn } from 'node:child_process'
 const projectRoot = new URL('..', import.meta.url).pathname
 const workspaceRoot = new URL('../..', import.meta.url).pathname
 const userData = await mkdtemp(join(tmpdir(), 'dsh-manager-electron-'))
+const canonicalUserData = await realpath(userData)
+const canonicalTmp = await realpath(tmpdir())
+const relativeUserData = relative(canonicalTmp, canonicalUserData)
+if (!relativeUserData || relativeUserData.startsWith('..') || relativeUserData.includes('/') || !basename(canonicalUserData).startsWith('dsh-manager-electron-')) {
+  throw new Error(`Refusing to create Electron fixtures outside an isolated temporary root: ${canonicalUserData}`)
+}
+const sentinel = randomUUID()
+const sentinelPath = join(canonicalUserData, '.electron-smoke-sentinel')
+const modelHome = join(canonicalUserData, 'model-configuration', 'home')
+await mkdir(modelHome, { recursive: true, mode: 0o700 })
+await writeFile(sentinelPath, `${sentinel}\n`, { mode: 0o600, flag: 'wx' })
+if ((await readFile(sentinelPath, 'utf8')).trim() !== sentinel) throw new Error('Electron fixture sentinel verification failed')
+await writeFile(join(modelHome, '.credentials.yaml'), 'version: 1\nrefs:\n  DEEPSEEK_API_KEY: electron-fixture-deepseek\n  SUB2API_API_KEY: electron-fixture-sub2api\n', { mode: 0o600, flag: 'wx' })
+await writeFile(join(modelHome, 'settings.yaml'), 'llm-pi-ai:\n  providers:\n    sub2api:\n      apiKeyEnv: SUB2API_API_KEY\n      api: openai-completions\n      baseURL: https://sub2api.invalid/v1\n      models:\n        - id: smoke-custom-chat\n', { mode: 0o600, flag: 'wx' })
 const artifacts = join(projectRoot, '.artifacts')
 await mkdir(artifacts, { recursive: true })
 
 const executablePath = process.env.DSH_MANAGER_EXECUTABLE || electronPath
+async function dshRpc(baseUrl, method, payload) {
+  const rpcId = randomUUID()
+  const response = await fetch(new URL(`/api/${method}`, baseUrl), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'client-request', rpcId, method, payload }),
+  })
+  const result = await response.json()
+  if (!response.ok || result?.rpcId !== rpcId || result?.result?.ok !== true) {
+    throw new Error(`DSH RPC ${method} failed: ${JSON.stringify({ status: response.status, result })}`)
+  }
+  return result.result.value
+}
+
 const application = await electron.launch({
   executablePath,
   args: process.env.DSH_MANAGER_EXECUTABLE ? [] : ['.'],
@@ -94,6 +123,70 @@ try {
   }, { workspace: workspaceRoot })
   if (!bundledProbe.version || !bundledProbe.port) throw new Error(`Bundled runtime probe was incomplete: ${JSON.stringify(bundledProbe)}`)
 
+  await page.getByRole('button', { name: '模型', exact: true }).click()
+  await page.locator('.web-host').waitFor()
+  let modelConfigurationUrl
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    const urls = await application.evaluate(({ webContents }) => webContents.getAllWebContents().map(contents => contents.getURL()))
+    modelConfigurationUrl = urls.find(url => /^http:\/\/127\.0\.0\.1:\d+\/$/u.test(url))
+    if (modelConfigurationUrl) break
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  if (!modelConfigurationUrl) throw new Error('Native DSH model configuration host did not load')
+  const modelHostBounds = await page.locator('.web-host').evaluate(element => {
+    const rect = element.getBoundingClientRect()
+    return { width: rect.width, height: rect.height }
+  })
+  if (modelHostBounds.width < 100 || modelHostBounds.height < 100) throw new Error(`Model configuration host collapsed: ${JSON.stringify(modelHostBounds)}`)
+  const credentialOverlayPath = join(userData, 'model-configuration', 'credentials.cordis.yml')
+  const credentialOverlay = await readFile(credentialOverlayPath, 'utf8')
+  if (!credentialOverlay.includes('.credentials.yaml') || credentialOverlay.includes('API_KEY')) throw new Error('Credential overlay contains the wrong data')
+  if (process.platform !== 'win32' && ((await stat(credentialOverlayPath)).mode & 0o077) !== 0) throw new Error('Credential overlay is not owner-only')
+  await application.evaluate(async ({ webContents }, url) => {
+    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
+    if (!contents) throw new Error('Model configuration WebContents is missing')
+    return contents.executeJavaScript(`(() => {
+      const button = [...document.querySelectorAll('button')].find(item => ['继续', 'Continue'].includes(item.textContent?.trim()))
+      if (button) button.click()
+      return Boolean(button)
+    })()`)
+  }, modelConfigurationUrl)
+  const sharedCredentialPath = join(userData, 'model-configuration', 'home', '.credentials.yaml')
+  if (process.platform !== 'win32' && ((await stat(sharedCredentialPath)).mode & 0o077) !== 0) throw new Error('Shared DSH credential file is not owner-only')
+  await page.waitForTimeout(500)
+  await page.getByTitle('打开模型设置').click()
+  let nativeModelsText = ''
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    nativeModelsText = await application.evaluate(async ({ webContents }, url) => {
+      const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
+      return contents ? contents.executeJavaScript('document.body.innerText') : ''
+    }, modelConfigurationUrl)
+    if (nativeModelsText.includes('添加自定义提供方')) break
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  if (!nativeModelsText.includes('添加自定义提供方')) throw new Error('Manager did not open the native DSH Models section')
+  const modelHostSettings = await dshRpc(modelConfigurationUrl, 'settings.describe', {})
+  const customProviderSettings = modelHostSettings.namespaces.find(namespace => namespace.ns === 'llm-pi-ai')?.user?.providers?.sub2api
+  if (!customProviderSettings?.models?.some(model => model.id === 'smoke-custom-chat')) {
+    throw new Error(`Native model Host did not load the guarded custom provider fixture: ${JSON.stringify(customProviderSettings)}`)
+  }
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.webContents.send('manager:menu:command', 'home'))
+  await page.getByRole('heading', { name: '概览' }).waitFor()
+  await page.waitForTimeout(200)
+  const attachedViews = await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.contentView.children.length ?? -1)
+  if (attachedViews !== 0) throw new Error(`Model WebContentsView remained attached after menu navigation: ${attachedViews}`)
+  let modelHostClosed = false
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      await fetch(modelConfigurationUrl, { signal: AbortSignal.timeout(250) })
+    } catch {
+      modelHostClosed = true
+      break
+    }
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  if (!modelHostClosed) throw new Error('Model configuration host remained alive after leaving Models')
+
   await page.screenshot({ path: join(artifacts, 'home-1440x920.png'), fullPage: true })
   await page.setViewportSize({ width: 1000, height: 700 })
   const compactOverflow = await page.evaluate(() => ({
@@ -150,6 +243,26 @@ try {
     if (!managedUrls.includes(`http://127.0.0.1:${instancePort}/`)) {
       throw new Error(`Embedded DSH view did not load the managed origin: ${JSON.stringify(managedUrls)}`)
     }
+    const dshBody = await application.evaluate(async ({ webContents }, url) => {
+      const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
+      if (!contents) throw new Error('Managed DSH WebContents is missing')
+      return contents.executeJavaScript('document.body.innerText')
+    }, `http://127.0.0.1:${instancePort}/`)
+    if (!dshBody.includes('选择工作区')) throw new Error('Managed DSH did not reach workspace selection')
+    if (dshBody.includes('添加一个 API Key')) throw new Error('Managed DSH still displayed API-key onboarding')
+    const targetUrl = `http://127.0.0.1:${instancePort}/`
+    const catalog = await dshRpc(targetUrl, 'llm.models', {})
+    const customGroup = catalog.groups.find(group => group.id === 'sub2api')
+    if (!customGroup?.models.some(model => model.id === 'smoke-custom-chat')) throw new Error(`Projected custom model is missing from the managed DSH catalog: ${JSON.stringify(catalog)}`)
+    if (!catalog.groups.some(group => group.id === 'deepseek-official')) throw new Error('DeepSeek official is missing from the managed DSH catalog')
+    const credentials = await dshRpc(targetUrl, 'credentials.describe', { refs: ['DEEPSEEK_API_KEY', 'SUB2API_API_KEY'] })
+    for (const ref of ['DEEPSEEK_API_KEY', 'SUB2API_API_KEY']) {
+      const view = credentials.credentials[ref]
+      if (!view?.configured || view.source === 'env') throw new Error(`Managed credential ${ref} did not resolve from shared native storage: ${JSON.stringify(view)}`)
+    }
+    const settings = await dshRpc(targetUrl, 'settings.describe', {})
+    const defaultModel = settings.namespaces.find(namespace => namespace.ns === 'agent-default-model')?.value
+    if (defaultModel?.provider !== 'deepseek-official') throw new Error(`Managed DSH default is not DeepSeek official: ${JSON.stringify(defaultModel)}`)
 
     await page.evaluate(id => window.manager.stopInstance(id), instance.id)
     const blockedPort = instancePort

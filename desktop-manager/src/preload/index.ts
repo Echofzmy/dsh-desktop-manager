@@ -48,6 +48,8 @@ const api: ManagerApi = {
   chooseDirectory: () => ipcRenderer.invoke(IPC.directoryChoose),
   openExternal: (instanceId: string) => ipcRenderer.invoke(IPC.externalOpen, instanceId),
   showInstanceView: (instanceId: string, bounds: EmbeddedViewBounds) => ipcRenderer.invoke(IPC.viewShow, instanceId, bounds),
+  showModelConfiguration: (bounds: EmbeddedViewBounds, openSettings: boolean) => ipcRenderer.invoke(IPC.modelViewShow, bounds, openSettings),
+  closeModelConfiguration: () => ipcRenderer.invoke(IPC.modelViewClose),
   hideInstanceView: () => ipcRenderer.invoke(IPC.viewHide),
   onSnapshotChanged: (listener: (snapshot: ManagerSnapshot) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, snapshot: ManagerSnapshot): void => listener(snapshot)
@@ -55,7 +57,7 @@ const api: ManagerApi = {
     return () => ipcRenderer.removeListener(IPC.snapshotChanged, wrapped)
   },
   onMenuCommand: (listener) => {
-    const wrapped = (_event: Electron.IpcRendererEvent, command: 'home' | 'runtimes' | 'settings' | 'new-instance'): void => listener(command)
+    const wrapped = (_event: Electron.IpcRendererEvent, command: 'home' | 'runtimes' | 'models' | 'settings' | 'new-instance'): void => listener(command)
     ipcRenderer.on(IPC.menuCommand, wrapped)
     return () => ipcRenderer.removeListener(IPC.menuCommand, wrapped)
   },

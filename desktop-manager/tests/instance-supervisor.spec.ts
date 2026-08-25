@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -58,6 +58,39 @@ describe('InstanceSupervisor', () => {
     expect(supervisor.isRunning(instance.id)).toBe(false)
     expect(processGroupAlive(running.pid!)).toBe(false)
   }, 15_000)
+
+  it('applies trusted patches and removes inherited credential references', async () => {
+    const { root, instance, runtime, environment } = await fixture()
+    const capture = join(root, 'capture.json')
+    await writeFile(runtime.preflight.entryPath!, `
+const fs = require('node:fs')
+const http = require('node:http')
+fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ argv: process.argv.slice(2), shadow: process.env.SUB2API_API_KEY, unrelated: process.env.GITHUB_TOKEN }))
+const server = http.createServer((_request, response) => response.end('ok'))
+server.listen(0, '127.0.0.1', () => console.log('dsh web: http://127.0.0.1:' + server.address().port))
+`)
+    const previous = process.env.SUB2API_API_KEY
+    const previousGithub = process.env.GITHUB_TOKEN
+    process.env.SUB2API_API_KEY = 'must-not-reach-child'
+    process.env.GITHUB_TOKEN = 'must-reach-child'
+    const supervisor = new InstanceSupervisor(join(root, 'logs'), { onStatus: () => undefined })
+    try {
+      const running = await supervisor.start(instance, runtime, environment, {
+        patchPaths: ['/manager/model-credentials.yml'],
+        removeEnvironmentKeys: ['sub2api_api_key'],
+      })
+      const result = JSON.parse(await readFile(capture, 'utf8')) as { argv: string[]; shadow?: string; unrelated?: string }
+      expect(result.argv).toEqual(['web', '--patch', '/manager/model-credentials.yml', '--host', '127.0.0.1', '--port', '0', '--no-open'])
+      expect(result.shadow).toBeUndefined()
+      expect(result.unrelated).toBe('must-reach-child')
+      await supervisor.stop(running, true)
+    } finally {
+      if (previous === undefined) delete process.env.SUB2API_API_KEY
+      else process.env.SUB2API_API_KEY = previous
+      if (previousGithub === undefined) delete process.env.GITHUB_TOKEN
+      else process.env.GITHUB_TOKEN = previousGithub
+    }
+  })
 
   it('contains a spawn error before a pid is published', async () => {
     const { root, instance, runtime, environment } = await fixture()

@@ -2,6 +2,7 @@ import {
   Activity,
   Archive,
   ArchiveRestore,
+  Bot,
   Boxes,
   Check,
   CircleStop,
@@ -33,7 +34,7 @@ const EMPTY: ManagerSnapshot = {
   settings: { openMode: 'embedded', checkUpdatesOnStartup: true },
   runtimes: [], environments: [], instances: [], tasks: [], backups: [], promotions: [], operations: [], templates: [],
 }
-type Page = { kind: 'home' } | { kind: 'runtimes' } | { kind: 'settings' } | { kind: 'instance'; id: string }
+type Page = { kind: 'home' } | { kind: 'runtimes' } | { kind: 'models' } | { kind: 'settings' } | { kind: 'instance'; id: string }
 type Modal = 'runtime' | 'worktree' | 'environment' | 'instance' | 'promotion' | null
 interface Confirmation { title: string; detail: string; actionLabel: string; action: () => Promise<unknown> }
 interface LogState { name: string; path: string; content: string; truncated: boolean }
@@ -69,13 +70,14 @@ export function App(): ReactNode {
   const [error, setError] = useState<string | null>(null)
   const [log, setLog] = useState<LogState | null>(null)
 
+  const navigate = (next: Page): void => { void window.manager.hideInstanceView(); setPage(next) }
   useEffect(() => { void window.manager.getSnapshot().then(setSnapshot).catch(reason => setError(errorText(reason))); return window.manager.onSnapshotChanged(setSnapshot) }, [])
   useEffect(() => window.manager.onMenuCommand(command => {
     if (command === 'new-instance') setModal('instance')
-    else setPage({ kind: command })
+    else navigate({ kind: command })
   }), [])
   const selectedInstance = page.kind === 'instance' ? snapshot.instances.find(instance => instance.id === page.id) : undefined
-  const navigate = (next: Page): void => { if (next.kind !== 'instance') void window.manager.hideInstanceView(); setPage(next) }
+  const obscured = modal !== null || confirmation !== null || templateSource !== null || templateUse !== null
   const run = async (key: string, action: () => Promise<unknown>): Promise<void> => {
     setBusy(key); setError(null)
     try { await action(); setSnapshot(await window.manager.getSnapshot()) } catch (reason) { setError(errorText(reason)) } finally { setBusy(null) }
@@ -96,6 +98,7 @@ export function App(): ReactNode {
       <nav className="sidebar-nav" aria-label="主导航">
         <button className={page.kind === 'home' ? 'active' : ''} onClick={() => navigate({ kind: 'home' })}><LayoutDashboard size={17} />概览</button>
         <button className={page.kind === 'runtimes' ? 'active' : ''} onClick={() => navigate({ kind: 'runtimes' })}><Boxes size={17} />运行时</button>
+        <button className={page.kind === 'models' ? 'active' : ''} onClick={() => navigate({ kind: 'models' })}><Bot size={17} />模型</button>
       </nav>
       <div className="sidebar-section"><div className="sidebar-section-title"><span>实例</span><span>{snapshot.instances.length}</span></div><div className="sidebar-instances">
         {!snapshot.instances.length && <p>暂无实例</p>}
@@ -109,8 +112,9 @@ export function App(): ReactNode {
       <main className="main-content">
         {page.kind === 'home' && <HomePage snapshot={snapshot} busy={busy} onModal={setModal} onOpen={id => navigate({ kind: 'instance', id })} onRun={run} onLog={showInstanceLog} onConfirm={confirm} onUseTemplate={setTemplateUse} />}
         {page.kind === 'runtimes' && <RuntimesPage snapshot={snapshot} busy={busy} onModal={setModal} onRun={run} onLog={showTaskLog} onConfirm={confirm} onError={setError} />}
+        {page.kind === 'models' && <ModelsPage hasRuntime={snapshot.runtimes.some(runtime => runtime.source !== 'local' && runtime.preflight.ready && !runtime.taskBlocked)} runningCount={snapshot.instances.filter(instance => instance.status === 'running').length} obscured={obscured} onError={setError} />}
         {page.kind === 'settings' && <SettingsPage snapshot={snapshot} busy={busy} onModal={setModal} onRun={run} onConfirm={confirm} />}
-        {page.kind === 'instance' && selectedInstance && <InstancePage instance={selectedInstance} snapshot={snapshot} busy={busy} obscured={modal !== null || confirmation !== null} onRun={run} onLog={showInstanceLog} onError={setError} onDelete={() => confirm({ title: '删除实例', detail: `删除“${selectedInstance.name}”的元数据和日志。生产环境数据不会被删除。`, actionLabel: '删除实例', action: async () => { await window.manager.deleteInstance(selectedInstance.id, false); navigate({ kind: 'home' }) } })} onSaveTemplate={() => setTemplateSource(selectedInstance.id)} />}
+        {page.kind === 'instance' && selectedInstance && <InstancePage instance={selectedInstance} snapshot={snapshot} busy={busy} obscured={obscured} onRun={run} onLog={showInstanceLog} onError={setError} onDelete={() => confirm({ title: '删除实例', detail: `删除“${selectedInstance.name}”的元数据和日志。生产环境数据不会被删除。`, actionLabel: '删除实例', action: async () => { await window.manager.deleteInstance(selectedInstance.id, false); navigate({ kind: 'home' }) } })} onSaveTemplate={() => setTemplateSource(selectedInstance.id)} />}
       </main>
     </section>
 
@@ -124,6 +128,57 @@ export function App(): ReactNode {
     {confirmation && <Dialog title={confirmation.title} onClose={() => setConfirmation(null)}><div className="confirm-content"><p>{confirmation.detail}</p><footer><button className="button outline" onClick={() => setConfirmation(null)}>取消</button><button className="button danger" disabled={busy !== null} onClick={() => void run('confirm', async () => { await confirmation.action(); setConfirmation(null) })}>{confirmation.actionLabel}</button></footer></div></Dialog>}
     {log && <LogPanel log={log} onClose={() => setLog(null)} />}
   </div>
+}
+
+type ModelPhase = 'idle' | 'starting' | 'blocked' | 'models' | 'unavailable' | 'failed'
+function ModelsPage({ hasRuntime, runningCount, obscured, onError }: { hasRuntime: boolean; runningCount: number; obscured: boolean; onError: (message: string) => void }): ReactNode {
+  const host = useRef<HTMLDivElement>(null)
+  const requestGeneration = useRef(0)
+  const [phase, setPhase] = useState<ModelPhase>('idle')
+  const show = (openSettings = true, announce = true): void => {
+    const element = host.current
+    if (!element || !hasRuntime || obscured) return
+    const generation = openSettings ? ++requestGeneration.current : requestGeneration.current
+    if (openSettings && announce) setPhase('starting')
+    const rect = element.getBoundingClientRect()
+    void window.manager.showModelConfiguration({ x: rect.x, y: rect.y, width: rect.width, height: rect.height }, openSettings).then(result => {
+      if (!openSettings || generation !== requestGeneration.current) return
+      if (result === 'opened' || result === 'already-open') setPhase('models')
+      else if (result === 'dialog-blocked') setPhase('blocked')
+      else setPhase('unavailable')
+    }).catch(reason => {
+      if (generation !== requestGeneration.current) return
+      setPhase('failed')
+      onError(errorText(reason))
+    })
+  }
+  useLayoutEffect(() => {
+    const element = host.current
+    if (!element || !hasRuntime || obscured) {
+      requestGeneration.current += 1
+      void window.manager.hideInstanceView()
+      return
+    }
+    show()
+    const observer = new ResizeObserver(() => show(false, false))
+    observer.observe(element)
+    return () => {
+      requestGeneration.current += 1
+      observer.disconnect()
+      void window.manager.closeModelConfiguration()
+    }
+  }, [hasRuntime, obscured, onError])
+
+  const status = !hasRuntime
+    ? '需要经过完整性验证的官方运行时'
+    : phase === 'starting' ? '正在启动模型配置…'
+      : phase === 'blocked' ? '请先完成当前 DSH 对话框，然后重新打开模型设置'
+        : phase === 'unavailable' ? '无法自动定位模型页，请在 DSH 设置中选择“模型”'
+          : phase === 'failed' ? '模型配置启动失败'
+            : runningCount ? `${runningCount} 个运行中实例将在重启后应用提供方变更`
+              : 'DSH 原生提供方与凭据配置'
+  const inactive = !hasRuntime || phase === 'idle' || phase === 'starting' || phase === 'failed'
+  return <div className="instance-page"><header className="instance-toolbar"><div className="instance-title"><span className="environment-icon"><Bot size={17} /></span><span><strong>模型</strong><small>{status}</small></span></div><div className="toolbar-actions"><IconButton label="打开模型设置" disabled={!hasRuntime || phase === 'starting'} onClick={() => show()}><SettingsIcon size={17} /></IconButton></div></header><div className={`web-host${inactive ? ' inactive' : ''}`} ref={host}>{inactive && <div>{phase === 'failed' ? <Wrench size={28} /> : <Boxes size={28} />}<strong>{!hasRuntime ? '没有可用的官方运行时' : phase === 'failed' ? '无法打开模型配置' : '正在启动模型配置'}</strong><span>{!hasRuntime ? '安装或修复内置、下载的官方 DSH 后重试。' : phase === 'failed' ? '检查顶部错误后重试。' : '正在等待 DSH Web Host 就绪。'}</span>{phase === 'failed' && <button className="button outline small" onClick={() => show()}>重试</button>}</div>}</div></div>
 }
 
 function HomePage({ snapshot, busy, onModal, onOpen, onRun, onLog, onConfirm, onUseTemplate }: { snapshot: ManagerSnapshot; busy: string | null; onModal: (modal: Modal) => void; onOpen: (id: string) => void; onRun: Runner; onLog: (instance: InstanceRecord) => Promise<void>; onConfirm: (confirmation: Confirmation) => void; onUseTemplate: (id: string) => void }): ReactNode {

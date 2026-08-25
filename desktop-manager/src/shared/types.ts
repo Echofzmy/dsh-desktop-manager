@@ -234,6 +234,8 @@ export interface EmbeddedViewBounds {
   height: number
 }
 
+export type ModelConfigurationViewResult = 'host-ready' | 'opened' | 'already-open' | 'dialog-blocked' | 'unavailable'
+
 export interface ManagerApi {
   getSnapshot(): Promise<ManagerSnapshot>
   checkOfficialUpdate(channel: 'stable' | 'prerelease'): Promise<OfficialUpdateInfo>
@@ -269,7 +271,9 @@ export interface ManagerApi {
   chooseDirectory(): Promise<string | null>
   openExternal(instanceId: string): Promise<void>
   showInstanceView(instanceId: string, bounds: EmbeddedViewBounds): Promise<void>
+  showModelConfiguration(bounds: EmbeddedViewBounds, openSettings: boolean): Promise<ModelConfigurationViewResult>
+  closeModelConfiguration(): Promise<void>
   hideInstanceView(): Promise<void>
   onSnapshotChanged(listener: (snapshot: ManagerSnapshot) => void): () => void
-  onMenuCommand(listener: (command: 'home' | 'runtimes' | 'settings' | 'new-instance') => void): () => void
+  onMenuCommand(listener: (command: 'home' | 'runtimes' | 'models' | 'settings' | 'new-instance') => void): () => void
 }

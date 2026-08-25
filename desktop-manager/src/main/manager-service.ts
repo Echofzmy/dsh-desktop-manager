@@ -6,6 +6,8 @@ import { promisify } from 'node:util'
 import { EnvironmentBackupService } from './environment-backup.js'
 import { EnvironmentService } from './environment-service.js'
 import { InstanceSupervisor, portAvailable, processGroupAlive } from './instance-supervisor.js'
+import { ModelConfigurationService } from './model-configuration-service.js'
+import { ModelSettingsProjection } from './model-settings-projection.js'
 import { preflightRuntime } from './runtime-preflight.js'
 import { RuntimeTaskRunner } from './runtime-task-runner.js'
 import { discoverBundledRuntime, verifyOfficialRuntime } from './runtime/catalog.js'
@@ -62,6 +64,8 @@ export class ManagerService {
   readonly #environments: EnvironmentService
   readonly #backups: EnvironmentBackupService
   readonly #officialInstaller: OfficialRuntimeInstaller
+  readonly #modelSettings: ModelSettingsProjection
+  readonly #modelConfiguration: ModelConfigurationService
   readonly #taskRunner = new RuntimeTaskRunner()
   readonly #listeners = new Set<(snapshot: ManagerSnapshot) => void>()
   readonly #environmentReservations = new Set<string>()
@@ -84,9 +88,12 @@ export class ManagerService {
     this.#environments = new EnvironmentService(join(dataRoot, 'environments'))
     this.#backups = new EnvironmentBackupService(dataRoot)
     this.#officialInstaller = new OfficialRuntimeInstaller(dataRoot)
+    this.#modelSettings = new ModelSettingsProjection(dataRoot)
+    this.#modelConfiguration = new ModelConfigurationService(dataRoot, this.#modelSettings)
   }
 
   async initialize(): Promise<void> {
+    await this.#modelSettings.initialize()
     await this.#store.load()
     const recoveredRestoreEnvironmentIds: string[] = []
     for (const backup of this.snapshot().backups) {
@@ -292,6 +299,7 @@ export class ManagerService {
     const snapshot = this.snapshot()
     const runtime = requiredById(snapshot.runtimes, runtimeId, 'Runtime')
     if (this.#runtimeReservations.has(runtimeId)) throw new Error('该运行版本仍有生产操作在进行。')
+    if (this.#modelConfiguration.usesRuntime(runtimeId)) throw new Error('模型配置正在使用该运行版本，请先离开模型页面。')
     if (runtime.source === 'bundled') throw new Error('内置运行版本不可删除。')
     const referencing = snapshot.instances.filter(instance => instance.runtimeId === runtimeId)
     if (referencing.length) throw new Error(`仍有 ${referencing.length} 个实例使用该运行版本，请先删除或改绑实例。`)
@@ -381,6 +389,7 @@ export class ManagerService {
     const snapshot = this.snapshot()
     const runtime = requiredById(snapshot.runtimes, runtimeId, 'Runtime')
     if (this.#runtimeReservations.has(runtimeId)) throw new Error('该运行版本仍有生产操作在进行。')
+    if (this.#modelConfiguration.usesRuntime(runtimeId)) throw new Error('模型配置正在使用该运行版本，请先离开模型页面。')
     if (runtime.immutable) throw new Error('生产快照为不可变运行版本，不能执行构建或安装任务。')
     if (runtime.source !== 'local') throw new Error('官方运行版本不提供源码构建任务。')
     if (snapshot.tasks.some(task => task.runtimeId === runtimeId && (task.status === 'prepared' || task.status === 'running'))) throw new Error('该运行版本已有任务在执行。')
@@ -1110,9 +1119,12 @@ export class ManagerService {
       snapshot = this.snapshot()
       const latestInstance = requiredById(snapshot.instances, instanceId, 'Instance')
       try {
-        return environment.kind === 'production'
-          ? await this.#startVerified(latestInstance, runtime, environment, selectedRuntime.preflight.buildFingerprint)
-          : await this.#supervisor.start(latestInstance, runtime, environment)
+        if (environment.kind === 'production') {
+          return await this.#startVerified(latestInstance, runtime, environment, selectedRuntime.preflight.buildFingerprint)
+        }
+        const projection = await this.#modelSettings.projectInto(environment.path)
+        const modelLaunch = this.#modelLaunchOptions(projection.credentialRefs)
+        return await this.#supervisor.start(latestInstance, runtime, environment, modelLaunch)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         await this.#store.update(draft => {
@@ -1182,13 +1194,34 @@ export class ManagerService {
     return recovered
   }
 
+  async stopModelConfiguration(): Promise<void> {
+    await this.#modelConfiguration.stop()
+  }
+
+  async ensureModelConfiguration(): Promise<InstanceRecord> {
+    const snapshot = this.snapshot()
+    const usable = (runtime: RuntimeRecord): boolean => runtime.source !== 'local' && runtime.preflight.ready && !runtime.taskBlocked
+    const preferred = snapshot.runtimes.find(runtime => runtime.source === 'bundled' && usable(runtime))
+      ?? snapshot.runtimes.find(runtime => runtime.id === snapshot.settings.defaultRuntimeId && usable(runtime))
+      ?? snapshot.runtimes.find(usable)
+    if (!preferred) throw new Error('模型配置需要一个经过完整性验证的官方运行时。')
+    this.#modelConfiguration.reserveRuntime(preferred.id)
+    try {
+      await verifyOfficialRuntime(preferred)
+      return await this.#modelConfiguration.ensureRunning(preferred)
+    } catch (error) {
+      this.#modelConfiguration.releaseRuntimeReservation(preferred.id)
+      throw error
+    }
+  }
+
   readInstanceLog(instanceId: string) {
     requiredById(this.snapshot().instances, instanceId, 'Instance')
     return this.#supervisor.readLog(instanceId)
   }
 
   async shutdown(): Promise<void> {
-    await Promise.all([this.#taskRunner.cancelAll(), this.#officialInstaller.cancelAll()])
+    await Promise.all([this.#taskRunner.cancelAll(), this.#officialInstaller.cancelAll(), this.#modelConfiguration.stop()])
     if (this.#environmentReservations.size) throw new Error('环境操作仍在进行，请等待完成后再退出。')
     await this.#supervisor.stopAll(this.snapshot().instances)
   }
@@ -1408,13 +1441,22 @@ export class ManagerService {
     }
   }
 
+  #modelLaunchOptions(credentialRefs: readonly string[]) {
+    return {
+      patchPaths: [this.#modelSettings.overlayPath],
+      removeEnvironmentKeys: credentialRefs,
+    }
+  }
+
   async #startVerified(instance: InstanceRecord, runtime: RuntimeRecord, environment: EnvironmentRecord, expectedFingerprint?: string): Promise<InstanceRecord> {
     await verifyOfficialRuntime(runtime)
     const fresh = await preflightRuntime(runtime.path)
     if (!fresh.report.ready) throw new Error(`运行版本最终预检失败：${fresh.report.checks.filter(check => check.level === 'failure').map(check => check.detail).join('；')}`)
     if (!expectedFingerprint) throw new Error('生产运行版本缺少持久化构建身份，不能直接启动。')
     if (fresh.report.buildFingerprint !== expectedFingerprint) throw new Error('运行版本构建闭包与已测试或备份时的身份不一致。')
-    return this.#supervisor.start(instance, { ...runtime, path: fresh.path, preflight: fresh.report }, environment)
+    const projection = await this.#modelSettings.projectInto(environment.path)
+    const modelLaunch = this.#modelLaunchOptions(projection.credentialRefs)
+    return this.#supervisor.start(instance, { ...runtime, path: fresh.path, preflight: fresh.report }, environment, modelLaunch)
   }
 
   #emit(): void {
