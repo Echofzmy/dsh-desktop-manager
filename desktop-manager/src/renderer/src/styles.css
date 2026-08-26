@@ -266,6 +266,20 @@ button { color: inherit; }
 .key-field input { height: 34px; padding-left: 2px; border: 0; }
 .model-editor { display: grid; gap: 8px; }
 .model-editor-heading { display: flex; align-items: center; justify-content: space-between; min-height: 34px; color: var(--text-secondary); font-size: 13px; font-weight: 500; }
+.model-editor-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.discovery-dialog { display: grid; gap: 12px; padding: 8px 24px 24px; }
+.discovery-dialog > header, .discovery-dialog > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.discovery-dialog p { margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 20px; }
+.discovery-dialog > footer { color: var(--text-tertiary); font-size: 12px; }
+.discovery-dialog > footer div { display: flex; gap: 8px; }
+.discovery-list { display: grid; max-height: min(420px, 55vh); margin: 0; overflow: auto; padding: 0; border: 1px solid var(--border-l1); border-radius: 8px; list-style: none; }
+.discovery-list li + li { border-top: 1px solid var(--border-l1); }
+.discovery-list label { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 9px 10px; }
+.discovery-list input { accent-color: var(--accent); }
+.discovery-list span { display: grid; min-width: 0; }
+.discovery-list strong, .discovery-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.discovery-list strong { font-size: 13px; font-weight: 500; }
+.discovery-list small, .discovery-list em { color: var(--text-tertiary); font-size: 11px; font-style: normal; line-height: 17px; }
 .model-row { display: grid; grid-template-columns: minmax(120px, 1.2fr) minmax(100px, 1fr) 110px 100px 30px; align-items: center; gap: 6px; }
 .model-row input { min-width: 0; height: 34px; padding: 0 8px; border: 1px solid var(--border-l2); border-radius: 6px; outline: none; }
 .model-row .icon-button { width: 30px; height: 30px; }

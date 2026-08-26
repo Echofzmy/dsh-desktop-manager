@@ -20,6 +20,7 @@ import type {
   CreateEnvironmentInput,
   CreateInstanceInput,
   CreateWorktreeInput,
+  DiscoverUnifiedModelsInput,
   EnvironmentRecord,
   InstanceRecord,
   InstanceTemplate,
@@ -1197,6 +1198,10 @@ export class ManagerService {
 
   getUnifiedConfiguration(): Promise<UnifiedConfiguration> {
     return this.#modelConfiguration.read()
+  }
+
+  discoverUnifiedModels(input: DiscoverUnifiedModelsInput) {
+    return this.#modelConfiguration.discoverModels(input)
   }
 
   saveUnifiedConfiguration(input: SaveUnifiedConfigurationInput): Promise<UnifiedConfiguration> {

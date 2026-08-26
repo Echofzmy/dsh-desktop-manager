@@ -34,6 +34,7 @@ export const IPC = {
   externalOpen: 'manager:external:open',
   viewShow: 'manager:view:show',
   unifiedConfigurationGet: 'manager:unified-configuration:get',
+  unifiedModelsDiscover: 'manager:unified-models:discover',
   unifiedConfigurationSave: 'manager:unified-configuration:save',
   unifiedCredentialSet: 'manager:unified-credential:set',
   viewHide: 'manager:view:hide',

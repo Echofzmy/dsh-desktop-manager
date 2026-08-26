@@ -280,6 +280,13 @@ export interface SaveUnifiedConfigurationInput {
   busyEnter: UnifiedConfiguration['busyEnter']
 }
 
+export interface DiscoverUnifiedModelsInput {
+  providerId: string
+  protocol: UnifiedProviderProtocol
+  baseURL?: string
+  apiKey?: string
+}
+
 export interface SetUnifiedCredentialInput {
   ref: string
   value: string | null
@@ -321,6 +328,7 @@ export interface ManagerApi {
   openExternal(instanceId: string): Promise<void>
   showInstanceView(instanceId: string, bounds: EmbeddedViewBounds): Promise<void>
   getUnifiedConfiguration(): Promise<UnifiedConfiguration>
+  discoverUnifiedModels(input: DiscoverUnifiedModelsInput): Promise<UnifiedModelProfile[]>
   saveUnifiedConfiguration(input: SaveUnifiedConfigurationInput): Promise<UnifiedConfiguration>
   setUnifiedCredential(input: SetUnifiedCredentialInput): Promise<UnifiedConfiguration>
   hideInstanceView(): Promise<void>

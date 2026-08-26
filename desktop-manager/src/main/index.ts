@@ -7,6 +7,7 @@ import type {
   CreateEnvironmentInput,
   CreateInstanceInput,
   CreateWorktreeInput,
+  DiscoverUnifiedModelsInput,
   EmbeddedViewBounds,
   InstallOfficialRuntimeInput,
   RegisterRuntimeInput,
@@ -132,6 +133,7 @@ function registerIpc(): void {
     await views!.show(instance, assertBounds(rawBounds))
   })
   handle(IPC.unifiedConfigurationGet, () => requiredManager().getUnifiedConfiguration())
+  handle(IPC.unifiedModelsDiscover, (_event, input: DiscoverUnifiedModelsInput) => requiredManager().discoverUnifiedModels(input))
   handle(IPC.unifiedConfigurationSave, (_event, input: SaveUnifiedConfigurationInput) => requiredManager().saveUnifiedConfiguration(input))
   handle(IPC.unifiedCredentialSet, (_event, input: SetUnifiedCredentialInput) => requiredManager().setUnifiedCredential(input))
   handle(IPC.viewHide, () => views!.hide())

@@ -4,6 +4,7 @@ import electronPath from 'electron'
 import { mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, join, relative } from 'node:path'
 import { tmpdir } from 'node:os'
+import { createServer as createHttpServer } from 'node:http'
 import { createServer } from 'node:net'
 import { spawn } from 'node:child_process'
 
@@ -18,13 +19,23 @@ if (!relativeUserData || relativeUserData.startsWith('..') || relativeUserData.i
 }
 const sentinel = randomUUID()
 const fixtureModelId = `smoke-custom-${sentinel}`
+const discoveredModelId = `smoke-discovered-${sentinel}`
+let discoveryAuthorization
+const discoveryServer = createHttpServer((request, response) => {
+  discoveryAuthorization = request.headers.authorization
+  if (request.url !== '/v1/models') { response.writeHead(404).end(); return }
+  response.setHeader('content-type', 'application/json')
+  response.end(JSON.stringify({ data: [{ id: fixtureModelId }, { id: discoveredModelId, name: 'Discovered Smoke Model', context_window: 96000, max_output_tokens: 6000 }] }))
+})
+await new Promise((resolve, reject) => discoveryServer.listen(0, '127.0.0.1', resolve).once('error', reject))
+const discoveryBaseURL = `http://127.0.0.1:${discoveryServer.address().port}/v1`
 const sentinelPath = join(canonicalUserData, '.electron-smoke-sentinel')
 const modelHome = join(canonicalUserData, 'model-configuration', 'home')
 await mkdir(modelHome, { recursive: true, mode: 0o700 })
 await writeFile(sentinelPath, `${sentinel}\n`, { mode: 0o600, flag: 'wx' })
 if ((await readFile(sentinelPath, 'utf8')).trim() !== sentinel) throw new Error('Electron fixture sentinel verification failed')
 await writeFile(join(modelHome, '.credentials.yaml'), 'version: 1\nrefs:\n  DEEPSEEK_API_KEY: electron-fixture-deepseek\n  SUB2API_API_KEY: electron-fixture-sub2api\n', { mode: 0o600, flag: 'wx' })
-await writeFile(join(modelHome, 'settings.yaml'), `llm-pi-ai:\n  providers:\n    sub2api:\n      apiKeyEnv: SUB2API_API_KEY\n      api: openai-completions\n      baseURL: https://sub2api.invalid/v1\n      models:\n        - id: ${fixtureModelId}\npermission:\n  defaultPreset: workspace-write\nui-theme:\n  preference: dark\nui-conversation:\n  busyEnter: steer\n`, { mode: 0o600, flag: 'wx' })
+await writeFile(join(modelHome, 'settings.yaml'), `llm-pi-ai:\n  providers:\n    sub2api:\n      apiKeyEnv: SUB2API_API_KEY\n      api: openai-completions\n      baseURL: ${discoveryBaseURL}\n      models:\n        - id: ${fixtureModelId}\npermission:\n  defaultPreset: workspace-write\nui-theme:\n  preference: dark\nui-conversation:\n  busyEnter: steer\n`, { mode: 0o600, flag: 'wx' })
 const artifacts = join(projectRoot, '.artifacts')
 await mkdir(artifacts, { recursive: true })
 
@@ -154,16 +165,25 @@ try {
   await providerCard.getByLabel('请求超时（分钟）').fill('15')
   await providerCard.getByLabel('流空闲超时（分钟）').fill('10')
   await providerCard.getByLabel('API Key').fill(`rotated-${sentinel}`)
+  await providerCard.getByRole('button', { name: '发现可用模型' }).click()
+  const discoveryDialog = page.getByRole('dialog', { name: '发现可用模型' })
+  await discoveryDialog.waitFor()
+  const existingCandidate = discoveryDialog.locator('li').filter({ hasText: fixtureModelId })
+  const newCandidate = discoveryDialog.locator('li').filter({ hasText: discoveredModelId })
+  if (!await existingCandidate.getByRole('checkbox').isDisabled()) throw new Error('Already configured discovery candidate was selectable')
+  if (!await newCandidate.getByRole('checkbox').isChecked()) throw new Error('New discovery candidate was not selected by default')
+  await discoveryDialog.getByRole('button', { name: '添加所选模型' }).click()
+  if (discoveryAuthorization !== `Bearer rotated-${sentinel}`) throw new Error('Discovery did not use the one-shot typed API key')
   await page.getByRole('button', { name: '保存更改' }).click()
   let savedConfiguration
   for (let attempt = 0; attempt < 100; attempt += 1) {
     savedConfiguration = await page.evaluate(() => window.manager.getUnifiedConfiguration())
     const provider = savedConfiguration.providers.find(candidate => candidate.id === 'sub2api')
-    if (provider?.displayName === 'Smoke Gateway' && provider.hasApiKey && provider.timeoutMs === 900000 && provider.streamIdleTimeoutMs === 600000 && savedConfiguration.defaultReasoningEffort === 'high') break
+    if (provider?.displayName === 'Smoke Gateway' && provider.hasApiKey && provider.models.some(model => model.id === discoveredModelId) && provider.timeoutMs === 900000 && provider.streamIdleTimeoutMs === 600000 && savedConfiguration.defaultReasoningEffort === 'high') break
     await new Promise(resolve => setTimeout(resolve, 100))
   }
   const savedProvider = savedConfiguration.providers.find(provider => provider.id === 'sub2api')
-  if (savedProvider?.displayName !== 'Smoke Gateway' || !savedProvider.hasApiKey || savedProvider.timeoutMs !== 900000 || savedProvider.streamIdleTimeoutMs !== 600000 || savedConfiguration.defaultReasoningEffort !== 'high' || savedConfiguration.defaultPermission !== 'read-only' || savedConfiguration.busyEnter !== 'queue' || savedConfiguration.defaultAgentPreset !== 'minimal') {
+  if (savedProvider?.displayName !== 'Smoke Gateway' || !savedProvider.hasApiKey || !savedProvider.models.some(model => model.id === discoveredModelId) || savedProvider.timeoutMs !== 900000 || savedProvider.streamIdleTimeoutMs !== 600000 || savedConfiguration.defaultReasoningEffort !== 'high' || savedConfiguration.defaultPermission !== 'read-only' || savedConfiguration.busyEnter !== 'queue' || savedConfiguration.defaultAgentPreset !== 'minimal') {
     throw new Error(`Native configuration controls did not persist: ${JSON.stringify(savedConfiguration)}`)
   }
   if (JSON.stringify(savedConfiguration).includes(`rotated-${sentinel}`)) throw new Error('Saved configuration returned credential plaintext')
@@ -273,7 +293,7 @@ try {
     if (defaultModel?.provider !== 'deepseek-official' || defaultModel?.reasoningEffort !== 'high') throw new Error(`Managed DSH default model or reasoning is wrong: ${JSON.stringify(defaultModel)}`)
     const piSettings = settings.namespaces.find(namespace => namespace.ns === 'llm-pi-ai')?.value
     const projectedProvider = piSettings?.providers?.sub2api
-    if (projectedProvider?.timeoutMs !== 900000 || projectedProvider?.streamIdleTimeoutMs !== 600000) throw new Error(`Managed DSH provider timeouts are wrong: ${JSON.stringify(projectedProvider)}`)
+    if (projectedProvider?.timeoutMs !== 900000 || projectedProvider?.streamIdleTimeoutMs !== 600000 || !projectedProvider?.models?.some(model => model.id === discoveredModelId)) throw new Error(`Managed DSH provider discovery projection is wrong: ${JSON.stringify(projectedProvider)}`)
     const permission = settings.namespaces.find(namespace => namespace.ns === 'permission')?.value
     const theme = settings.namespaces.find(namespace => namespace.ns === 'ui-theme')?.value
     const conversation = settings.namespaces.find(namespace => namespace.ns === 'ui-conversation')?.value
@@ -345,5 +365,6 @@ try {
   console.log(JSON.stringify({ screenshot: join(artifacts, 'home-1440x920.png'), compactScreenshot: join(artifacts, 'home-1000x700.png'), instanceScreenshot: instancePort ? join(artifacts, 'instance-1440x920.png') : undefined, instancePort, overflow, compactOverflow, apiReady }))
 } finally {
   await application.close()
+  await new Promise((resolve, reject) => discoveryServer.close(error => error ? reject(error) : resolve()))
   await rm(userData, { recursive: true, force: true })
 }

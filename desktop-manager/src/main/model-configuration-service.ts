@@ -1,6 +1,7 @@
 import { chmod, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type {
+  DiscoverUnifiedModelsInput,
   SaveUnifiedConfigurationInput,
   SetUnifiedCredentialInput,
   UnifiedConfiguration,
@@ -25,6 +26,10 @@ const CREDENTIAL_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 const RESERVED_CREDENTIAL_REFS = new Set(['DSH_HOME', 'ELECTRON_RUN_AS_NODE'])
 const PROTOCOLS = new Set<UnifiedProviderProtocol>(['openai-completions', 'openai-responses', 'anthropic-messages'])
 const REASONING_EFFORTS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+const DISCOVERY_PROTOCOLS = new Set<UnifiedProviderProtocol>(['openai-completions', 'openai-responses'])
+const DISCOVERY_TIMEOUT_MS = 30_000
+const DISCOVERY_MAX_BYTES = 4 * 1024 * 1024
+const DISCOVERY_MAX_MODELS = 1_000
 const DEFAULT_DEEPSEEK_MODELS: UnifiedModelProfile[] = [
   { id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', contextWindow: 1_000_000 },
   { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', contextWindow: 1_000_000 },
@@ -70,6 +75,55 @@ function mergeModels(existing: unknown, drafts: UnifiedModelProfile[]): Record<s
     else model.maxTokens = draft.maxTokens
     return model
   })
+}
+
+async function readDiscoveryBody(response: Response, url: string): Promise<string> {
+  const declared = Number(response.headers.get('content-length') ?? Number.NaN)
+  if (Number.isFinite(declared) && declared > DISCOVERY_MAX_BYTES) {
+    await response.body?.cancel()
+    throw new Error(`${url} 返回的模型列表超过 4 MiB。`)
+  }
+  if (response.body === null) return ''
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > DISCOVERY_MAX_BYTES) throw new Error(`${url} 返回的模型列表超过 4 MiB。`)
+      chunks.push(value)
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined)
+  }
+  const body = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    body.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(body)
+}
+
+function discoveredModelsOf(body: unknown): UnifiedModelProfile[] {
+  const data = recordOf(body).data
+  if (!Array.isArray(data)) throw new Error('模型列表响应缺少 data 数组，请手动添加模型。')
+  const models: UnifiedModelProfile[] = []
+  const seen = new Set<string>()
+  for (const raw of data) {
+    const entry = recordOf(raw)
+    const id = optionalString(entry.id)
+    if (!id || id.length > 200 || seen.has(id)) continue
+    seen.add(id)
+    const name = optionalString(entry.name) ?? optionalString(entry.display_name)
+    const contextWindow = [entry.context_window, entry.context_length].find(value => typeof value === 'number' && Number.isSafeInteger(value) && value > 0) as number | undefined
+    const maxTokens = [entry.max_output_tokens, entry.max_tokens].find(value => typeof value === 'number' && Number.isSafeInteger(value) && value > 0) as number | undefined
+    models.push({ id, ...(name ? { name } : {}), ...(contextWindow ? { contextWindow } : {}), ...(maxTokens ? { maxTokens } : {}) })
+    if (models.length > DISCOVERY_MAX_MODELS) throw new Error('提供方返回的模型数量超过 1000 个，请缩小网关返回范围或手动添加。')
+  }
+  return models
 }
 
 function assertCredentialRef(value: string): void {
@@ -124,6 +178,7 @@ function validateInput(input: SaveUnifiedConfigurationInput): SaveUnifiedConfigu
       let url: URL
       try { url = new URL(baseURL) } catch { throw new Error(`提供方 ${displayName} 的 Base URL 无效。`) }
       if (!['http:', 'https:'].includes(url.protocol)) throw new Error(`提供方 ${displayName} 的 Base URL 必须使用 HTTP 或 HTTPS。`)
+      if (url.username || url.password) throw new Error(`提供方 ${displayName} 的 Base URL 不能内嵌用户名或密码。`)
     }
     for (const [label, value] of [['请求超时', provider.timeoutMs], ['流空闲超时', provider.streamIdleTimeoutMs]] as const) {
       if (value !== undefined && value !== null && (!Number.isFinite(value) || value <= 0 || value > 2_147_483_647)) throw new Error(`${displayName} 的${label}无效。`)
@@ -218,6 +273,49 @@ export class ModelConfigurationService {
       theme: (optionalString(recordOf(settings['ui-theme']).preference) ?? 'system') as UnifiedConfiguration['theme'],
       busyEnter: (optionalString(recordOf(settings['ui-conversation']).busyEnter) ?? 'queue') as UnifiedConfiguration['busyEnter'],
     }
+  }
+
+  async discoverModels(raw: DiscoverUnifiedModelsInput): Promise<UnifiedModelProfile[]> {
+    if (!raw || typeof raw !== 'object' || typeof raw.providerId !== 'string' || typeof raw.protocol !== 'string') throw new Error('模型发现请求无效。')
+    const providerId = raw.providerId.trim()
+    if (!ROUTE_PATTERN.test(providerId)) throw new Error('提供方 ID 无效。')
+    if (!DISCOVERY_PROTOCOLS.has(raw.protocol)) throw new Error('当前协议不支持自动发现模型，请手动添加。')
+    const baseURL = raw.baseURL?.trim()
+    if (!baseURL) throw new Error('自动发现模型需要 Base URL。')
+    let parsedURL: URL
+    try { parsedURL = new URL(baseURL) } catch { throw new Error('Base URL 无效。') }
+    if (!['http:', 'https:'].includes(parsedURL.protocol)) throw new Error('Base URL 必须使用 HTTP 或 HTTPS。')
+    if (parsedURL.username || parsedURL.password) throw new Error('Base URL 不能内嵌用户名或密码。')
+    if (raw.apiKey !== undefined && typeof raw.apiKey !== 'string') throw new Error('API Key 无效。')
+    const suppliedKey = raw.apiKey?.trim()
+    if (raw.apiKey !== undefined && (!suppliedKey || suppliedKey.length > 32_768 || /[\u0000-\u001f\u007f-\uffff]/u.test(suppliedKey))) throw new Error('API Key 为空、过长或包含 HTTP Header 不支持的字符。')
+    const configured = (await this.read()).providers.find(provider => provider.id === providerId)
+    const normalizedBaseURL = baseURL.replace(/\/+$/u, '')
+    const savedBaseURL = configured?.baseURL?.trim().replace(/\/+$/u, '')
+    if (!suppliedKey && configured?.hasApiKey && normalizedBaseURL !== savedBaseURL) throw new Error('Base URL 已修改；为避免把已保存 Key 发送到新地址，请重新输入 API Key 后再发现模型。')
+    const apiKey = suppliedKey ?? (configured && normalizedBaseURL === savedBaseURL ? await this.#credentialValue(configured.apiKeyRef) : undefined)
+    const url = `${normalizedBaseURL}/models`
+    const signal = AbortSignal.timeout(DISCOVERY_TIMEOUT_MS)
+    let response: Response
+    try {
+      response = await fetch(url, {
+        method: 'GET',
+        headers: { accept: 'application/json', ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
+        signal,
+      })
+    } catch (error) {
+      if (signal.aborted) throw new Error('模型发现请求等待超过 30 秒。', { cause: error })
+      throw new Error(`无法连接模型列表接口：${url}`, { cause: error })
+    }
+    if (!response.ok) throw new Error(`${url} 返回 HTTP ${response.status}${response.status === 401 || response.status === 403 ? '，请检查 API Key' : ''}。`)
+    let text: string
+    try { text = await readDiscoveryBody(response, url) } catch (error) {
+      if (signal.aborted) throw new Error('模型发现请求等待超过 30 秒。', { cause: error })
+      throw error
+    }
+    let body: unknown
+    try { body = JSON.parse(text) } catch (error) { throw new Error('模型列表接口没有返回有效 JSON。', { cause: error }) }
+    return discoveredModelsOf(body)
   }
 
   async save(raw: SaveUnifiedConfigurationInput): Promise<UnifiedConfiguration> {
@@ -319,6 +417,22 @@ export class ModelConfigurationService {
       }
     }, CREDENTIAL_LOCK_WAIT_MS)
     return this.read()
+  }
+
+  async #credentialValue(ref: string): Promise<string | undefined> {
+    const path = this.#projection.credentialsPath
+    await assertOwnerOnly(path)
+    const text = await readOptional(path)
+    if (text === undefined) return undefined
+    const root = recordOf(parseSettings(text, '共享凭据').toJS())
+    if (root.version !== 1) throw new Error('共享凭据文件版本无效。')
+    const refs = recordOf(root.refs)
+    for (const [key, value] of Object.entries(refs)) {
+      assertCredentialRef(key)
+      if (typeof value !== 'string' || value.length === 0) throw new Error(`共享凭据 ${key} 无效。`)
+    }
+    const value = refs[ref]
+    return typeof value === 'string' ? value : undefined
   }
 
   async #credentialRefs(): Promise<Set<string>> {

@@ -1,3 +1,5 @@
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -28,6 +30,44 @@ describe('ModelConfigurationService', () => {
     expect(result.providers[0]!.models.map(model => model.id)).toContain('deepseek-v4-flash')
     expect(JSON.stringify(result)).not.toContain('secret-never-returned')
     expect(result).toMatchObject({ defaultPermission: 'workspace-write', locale: 'system', theme: 'system', busyEnter: 'queue' })
+  })
+
+  it('discovers OpenAI-compatible models without returning or persisting probe credentials', async () => {
+    const { projection, service } = await fixture()
+    await writeFile(join(projection.home, 'settings.yaml'), 'llm-pi-ai:\n  providers:\n    gateway:\n      api: openai-responses\n      baseURL: http://127.0.0.1\n      apiKeyEnv: GATEWAY_API_KEY\n      models:\n        - id: existing\n')
+    await writeFile(projection.credentialsPath, 'version: 1\nrefs:\n  GATEWAY_API_KEY: stored-probe-key\n', { mode: 0o600 })
+    const authorizations: Array<string | undefined> = []
+    const server = createServer((request, response) => {
+      authorizations.push(request.headers.authorization)
+      if (request.headers.authorization === 'Bearer wrong-key') { response.writeHead(401).end(); return }
+      response.setHeader('content-type', 'application/json')
+      response.end(JSON.stringify({ data: [
+        { id: 'model-a', name: 'Model A', context_window: 128000, max_output_tokens: 8192 },
+        { id: 'model-a', name: 'duplicate ignored' },
+        { display_name: 'missing id ignored' },
+        { id: 'model-b', display_name: 'Model B', context_length: 64000, max_tokens: 4096 },
+      ] }))
+    })
+    await new Promise<void>((resolve, reject) => server.listen(0, '127.0.0.1', resolve).once('error', reject))
+    const baseURL = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`
+    await writeFile(join(projection.home, 'settings.yaml'), `llm-pi-ai:\n  providers:\n    gateway:\n      api: openai-responses\n      baseURL: ${baseURL}\n      apiKeyEnv: GATEWAY_API_KEY\n      models:\n        - id: existing\n`)
+    try {
+      await expect(service.discoverModels({ providerId: 'gateway', protocol: 'anthropic-messages', baseURL })).rejects.toThrow('不支持自动发现')
+      await expect(service.discoverModels({ providerId: 'gateway', protocol: 'openai-responses', baseURL: `http://user:password@127.0.0.1:${(server.address() as AddressInfo).port}/v1`, apiKey: 'typed' })).rejects.toThrow('不能内嵌用户名或密码')
+      await expect(service.discoverModels({ providerId: 'gateway', protocol: 'openai-responses', baseURL: `${baseURL}/changed` })).rejects.toThrow('避免把已保存 Key 发送到新地址')
+      const stored = await service.discoverModels({ providerId: 'gateway', protocol: 'openai-responses', baseURL })
+      expect(stored).toEqual([
+        { id: 'model-a', name: 'Model A', contextWindow: 128000, maxTokens: 8192 },
+        { id: 'model-b', name: 'Model B', contextWindow: 64000, maxTokens: 4096 },
+      ])
+      const typed = await service.discoverModels({ providerId: 'gateway', protocol: 'openai-completions', baseURL, apiKey: ' replacement-key ' })
+      expect(typed).toHaveLength(2)
+      await expect(service.discoverModels({ providerId: 'gateway', protocol: 'openai-responses', baseURL, apiKey: 'wrong-key' })).rejects.toThrow('HTTP 401，请检查 API Key')
+      expect(authorizations).toEqual(['Bearer stored-probe-key', 'Bearer replacement-key', 'Bearer wrong-key'])
+      expect(await readFile(projection.credentialsPath, 'utf8')).not.toContain('replacement-key')
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+    }
   })
 
   it('writes DSH-compatible settings while preserving hidden advanced fields', async () => {

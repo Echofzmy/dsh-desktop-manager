@@ -171,6 +171,8 @@ function ModelsPage({ runningCount, onDirtyChange, onError }: { runningCount: nu
   const [riskOpen, setRiskOpen] = useState(false)
   const [riskAcknowledged, setRiskAcknowledged] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [discovering, setDiscovering] = useState<string | null>(null)
+  const [discovery, setDiscovery] = useState<{ providerId: string; candidates: UnifiedModelProfile[]; picked: Set<string> } | null>(null)
 
   const load = async (): Promise<void> => {
     try {
@@ -227,6 +229,56 @@ function ModelsPage({ runningCount, onDirtyChange, onError }: { runningCount: nu
       return { ...current, providers }
     })
   }
+  const discoverModels = async (provider: UnifiedProviderProfile): Promise<void> => {
+    if (discovering) return
+    setDiscovering(provider.id)
+    try {
+      const apiKey = keyDrafts[provider.id]?.trim()
+      const candidates = await window.manager.discoverUnifiedModels({
+        providerId: provider.id,
+        protocol: provider.protocol,
+        ...(provider.baseURL?.trim() ? { baseURL: provider.baseURL.trim() } : {}),
+        ...(apiKey ? { apiKey } : {}),
+      })
+      if (candidates.length === 0) { onError('提供方没有返回可用模型。'); return }
+      const known = new Set(provider.models.map(model => model.id))
+      const room = Math.max(0, 100 - provider.models.length)
+      const picked = new Set(candidates.filter(model => !known.has(model.id)).slice(0, room).map(model => model.id))
+      setDiscovery({ providerId: provider.id, candidates, picked })
+    } catch (error) { onError(errorText(error)) } finally { setDiscovering(null) }
+  }
+  const adoptDiscoveredModels = (): void => {
+    if (!discovery) return
+    patchProvider(discovery.providerId, provider => {
+      const models = new Map(provider.models.map(model => [model.id, model]))
+      for (const candidate of discovery.candidates) if (discovery.picked.has(candidate.id) && !models.has(candidate.id)) models.set(candidate.id, candidate)
+      return { ...provider, models: [...models.values()] }
+    })
+    setDiscovery(null)
+  }
+  const toggleDiscoveredModel = (id: string): void => {
+    setDiscovery(current => {
+      if (!current) return current
+      const provider = draft?.providers.find(candidate => candidate.id === current.providerId)
+      if (!provider || provider.models.some(model => model.id === id)) return current
+      const picked = new Set(current.picked)
+      if (!picked.delete(id)) {
+        if (provider.models.length + picked.size >= 100) { onError('每个提供方最多配置 100 个模型。'); return current }
+        picked.add(id)
+      }
+      return { ...current, picked }
+    })
+  }
+  const toggleAllDiscoveredModels = (): void => {
+    setDiscovery(current => {
+      if (!current) return current
+      const provider = draft?.providers.find(candidate => candidate.id === current.providerId)
+      if (!provider) return current
+      const known = new Set(provider.models.map(model => model.id))
+      const available = current.candidates.filter(model => !known.has(model.id)).slice(0, Math.max(0, 100 - provider.models.length))
+      return { ...current, picked: current.picked.size === available.length ? new Set() : new Set(available.map(model => model.id)) }
+    })
+  }
   const save = async (): Promise<void> => {
     if (!draft || saving) return
     setSaving(true)
@@ -277,7 +329,7 @@ function ModelsPage({ runningCount, onDirtyChange, onError }: { runningCount: nu
               {provider.kind === 'custom' && <div className="provider-grid"><label className="field"><span>显示名称</span><input value={provider.displayName} onChange={event => patchProvider(provider.id, current => ({ ...current, displayName: event.target.value }))} /></label><label className="field"><span>API 协议</span><select value={provider.protocol} onChange={event => patchProvider(provider.id, current => ({ ...current, protocol: event.target.value as UnifiedProviderProfile['protocol'] }))}><option value="openai-completions">OpenAI Completions</option><option value="openai-responses">OpenAI Responses</option><option value="anthropic-messages">Anthropic Messages</option></select></label></div>}
               <label className="field"><span>Base URL</span><input value={provider.baseURL ?? ''} placeholder={provider.kind === 'deepseek' ? 'https://api.deepseek.com' : 'https://api.example.com/v1'} onChange={event => patchProvider(provider.id, current => ({ ...current, baseURL: event.target.value }))} /></label>
               <div className="provider-grid"><label className="field"><span>请求超时（分钟）</span><input type="number" min="0.1" step="0.1" value={timeoutMinutes(provider.timeoutMs)} placeholder="使用提供方默认值" onChange={event => patchProvider(provider.id, current => { const next = { ...current }; const value = timeoutMilliseconds(event.target.value); if (value === undefined) next.timeoutMs = null; else next.timeoutMs = value; return next })} /></label><label className="field"><span>流空闲超时（分钟）</span><input type="number" min="0.1" step="0.1" value={timeoutMinutes(provider.streamIdleTimeoutMs)} placeholder="DSH 默认 5 分钟" onChange={event => patchProvider(provider.id, current => { const next = { ...current }; const value = timeoutMilliseconds(event.target.value); if (value === undefined) next.streamIdleTimeoutMs = null; else next.streamIdleTimeoutMs = value; return next })} /></label></div>
-              <div className="model-editor"><div className="model-editor-heading"><span>模型</span><button className="button outline small" onClick={() => patchProvider(provider.id, current => ({ ...current, models: [...current.models, { id: '' }] }))}><Plus size={14} />添加模型</button></div>{provider.models.map((model, index) => <div className="model-row" key={`${provider.id}:${index}`}><input aria-label={`模型 ID ${index + 1}`} placeholder="模型 ID" value={model.id} onChange={event => patchModel(provider.id, index, { id: event.target.value })} /><input aria-label={`模型名称 ${index + 1}`} placeholder="显示名称（可选）" value={model.name ?? ''} onChange={event => patchModel(provider.id, index, { name: event.target.value || undefined })} /><input aria-label={`上下文窗口 ${index + 1}`} inputMode="numeric" placeholder="上下文窗口" value={model.contextWindow ?? ''} onChange={event => patchModel(provider.id, index, { contextWindow: event.target.value ? Number(event.target.value) : undefined })} /><input aria-label={`最大输出 ${index + 1}`} inputMode="numeric" placeholder="最大输出" value={model.maxTokens ?? ''} onChange={event => patchModel(provider.id, index, { maxTokens: event.target.value ? Number(event.target.value) : undefined })} /><IconButton danger label="删除模型" onClick={() => deleteModel(provider.id, index)}><Trash2 size={15} /></IconButton></div>)}</div>
+              <div className="model-editor"><div className="model-editor-heading"><span>模型</span><span className="model-editor-actions"><button className="button outline small" disabled={!['openai-completions', 'openai-responses'].includes(provider.protocol) || discovering !== null || !provider.baseURL?.trim()} title={!['openai-completions', 'openai-responses'].includes(provider.protocol) ? '当前协议没有可读取的模型列表接口' : !provider.baseURL?.trim() ? '请先填写 Base URL' : undefined} onClick={() => void discoverModels(provider)}><RefreshCw size={14} className={discovering === provider.id ? 'spin' : ''} />{discovering === provider.id ? '正在发现…' : '发现可用模型'}</button><button className="button outline small" onClick={() => patchProvider(provider.id, current => ({ ...current, models: [...current.models, { id: '' }] }))}><Plus size={14} />添加模型</button></span></div>{provider.models.map((model, index) => <div className="model-row" key={`${provider.id}:${index}`}><input aria-label={`模型 ID ${index + 1}`} placeholder="模型 ID" value={model.id} onChange={event => patchModel(provider.id, index, { id: event.target.value })} /><input aria-label={`模型名称 ${index + 1}`} placeholder="显示名称（可选）" value={model.name ?? ''} onChange={event => patchModel(provider.id, index, { name: event.target.value || undefined })} /><input aria-label={`上下文窗口 ${index + 1}`} inputMode="numeric" placeholder="上下文窗口" value={model.contextWindow ?? ''} onChange={event => patchModel(provider.id, index, { contextWindow: event.target.value ? Number(event.target.value) : undefined })} /><input aria-label={`最大输出 ${index + 1}`} inputMode="numeric" placeholder="最大输出" value={model.maxTokens ?? ''} onChange={event => patchModel(provider.id, index, { maxTokens: event.target.value ? Number(event.target.value) : undefined })} /><IconButton danger label="删除模型" onClick={() => deleteModel(provider.id, index)}><Trash2 size={15} /></IconButton></div>)}</div>
               {provider.kind !== 'deepseek' && <footer className="provider-footer"><button className="button danger small" onClick={() => setRemoving(provider)}><Trash2 size={14} />删除提供方</button></footer>}
             </div>}
           </article>)}</div>
@@ -287,8 +339,16 @@ function ModelsPage({ runningCount, onDirtyChange, onError }: { runningCount: nu
     {adding && <AddProviderDialog existing={draft.providers.map(provider => provider.id)} onClose={() => setAdding(false)} onAdd={provider => { setDraft({ ...draft, providers: [...draft.providers, provider] }); setExpanded(provider.id); setAdding(false) }} />}
     {removing && <Dialog title="删除提供方" onClose={() => setRemoving(null)}><div className="confirm-content"><p>将删除“{removing.displayName}”的共享模型配置。已保存的 API Key 会保留，可在删除前单独清除。</p><footer><button className="button outline" onClick={() => setRemoving(null)}>取消</button><button className="button danger" onClick={() => { const providers = draft.providers.filter(provider => provider.id !== removing.id); const { defaultModel, ...rest } = draft; setDraft(defaultModel?.provider === removing.id ? { ...rest, providers } : { ...draft, providers }); setRemoving(null) }}>删除提供方</button></footer></div></Dialog>}
     {clearingKey && <Dialog title="清除 API Key" onClose={() => setClearingKey(null)}><div className="confirm-content"><p>将从共享凭据文件中清除“{clearingKey.displayName}”使用的 API Key。引用同一 Key 的其他提供方也会受到影响。</p><footer><button className="button outline" onClick={() => setClearingKey(null)}>取消</button><button className="button danger" onClick={() => { setSaving(true); void window.manager.setUnifiedCredential({ ref: clearingKey.apiKeyRef, value: null }).then(next => { setConfiguration(next); setDraft(current => current ? { ...current, providers: current.providers.map(provider => provider.apiKeyRef === clearingKey.apiKeyRef ? { ...provider, hasApiKey: false } : provider) } : structuredClone(next)); setKeyDrafts(current => { const changed = { ...current }; for (const provider of next.providers) if (provider.apiKeyRef === clearingKey.apiKeyRef) delete changed[provider.id]; return changed }); setClearingKey(null) }).catch(error => onError(errorText(error))).finally(() => setSaving(false)) }}>清除 Key</button></footer></div></Dialog>}
+    {discovery && <DiscoveryModelsDialog candidates={discovery.candidates} configured={draft.providers.find(provider => provider.id === discovery.providerId)?.models ?? []} picked={discovery.picked} onToggle={toggleDiscoveredModel} onToggleAll={toggleAllDiscoveredModels} onClose={() => setDiscovery(null)} onAdopt={adoptDiscoveredModels} />}
     {riskOpen && <Dialog title="启用完全访问" onClose={() => { setRiskOpen(false); setRiskAcknowledged(false) }}><div className="confirm-content"><p>以后创建的会话将可以访问工作区之外的文件，并且不会请求批准。</p><label className="check-row"><input type="checkbox" checked={riskAcknowledged} onChange={event => setRiskAcknowledged(event.target.checked)} />我了解这会扩大新会话的系统访问范围</label><footer><button className="button outline" onClick={() => { setRiskOpen(false); setRiskAcknowledged(false) }}>取消</button><button className="button danger" disabled={!riskAcknowledged} onClick={() => { setDraft({ ...draft, defaultPermission: 'danger-full-access' }); setRiskOpen(false); setRiskAcknowledged(false) }}>启用完全访问</button></footer></div></Dialog>}
   </div>
+}
+
+function DiscoveryModelsDialog({ candidates, configured, picked, onToggle, onToggleAll, onClose, onAdopt }: { candidates: UnifiedModelProfile[]; configured: UnifiedModelProfile[]; picked: Set<string>; onToggle: (id: string) => void; onToggleAll: () => void; onClose: () => void; onAdopt: () => void }): ReactNode {
+  const known = new Set(configured.map(model => model.id))
+  const selectable = new Set(candidates.filter(model => !known.has(model.id)).slice(0, Math.max(0, 100 - configured.length)).map(model => model.id))
+  const allPicked = selectable.size > 0 && [...selectable].every(id => picked.has(id))
+  return <Dialog title="发现可用模型" onClose={onClose}><div className="discovery-dialog"><header><p>选择要加入当前提供方的模型。已配置模型不会被覆盖。</p><button className="button outline small" onClick={onToggleAll}>{allPicked ? '取消全选' : '全选新模型'}</button></header><ul className="discovery-list">{candidates.map(model => { const existing = known.has(model.id); const unavailable = !existing && !selectable.has(model.id); return <li key={model.id}><label><input type="checkbox" disabled={existing || unavailable} checked={!existing && picked.has(model.id)} onChange={() => onToggle(model.id)} /><span><strong>{model.name || model.id}</strong><small>{model.id}{model.contextWindow ? ` · 上下文 ${model.contextWindow.toLocaleString()}` : ''}{model.maxTokens ? ` · 最大输出 ${model.maxTokens.toLocaleString()}` : ''}</small></span>{(existing || unavailable) && <em>{existing ? '已配置' : '已达上限'}</em>}</label></li> })}</ul><footer><span>已选择 {picked.size} 个</span><div><button className="button outline" onClick={onClose}>取消</button><button className="button primary" disabled={picked.size === 0} onClick={onAdopt}>添加所选模型</button></div></footer></div></Dialog>
 }
 
 function ConfigRow({ title, detail, children }: { title: string; detail: string; children: ReactNode }): ReactNode {
@@ -306,7 +366,7 @@ function AddProviderDialog({ existing, onClose, onAdd }: { existing: string[]; o
     const route = id.trim()
     if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(route) || existing.includes(route)) { setError(existing.includes(route) ? '提供方 ID 已存在。' : 'ID 只能使用小写字母、数字和连字符。'); return }
     if (!displayName.trim() || !baseURL.trim()) { setError('显示名称和 Base URL 不能为空。'); return }
-    onAdd({ id: route, kind: 'custom', displayName: displayName.trim(), protocol, apiKeyRef: `${route.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`, hasApiKey: false, baseURL: baseURL.trim(), models: [{ id: '' }] })
+    onAdd({ id: route, kind: 'custom', displayName: displayName.trim(), protocol, apiKeyRef: `${route.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`, hasApiKey: false, baseURL: baseURL.trim(), models: [] })
   }
   return <Dialog title="添加自定义提供方" onClose={onClose}><form className="form" onSubmit={submit}>{error && <p className="inline-error">{error}</p>}<div className="provider-grid"><label className="field"><span>提供方 ID</span><input autoFocus value={id} placeholder="例如 sub2api" onChange={event => setId(event.target.value)} /></label><label className="field"><span>显示名称</span><input value={displayName} placeholder="例如 Sub2API" onChange={event => setDisplayName(event.target.value)} /></label></div><label className="field"><span>Base URL</span><input value={baseURL} placeholder="https://api.example.com/v1" onChange={event => setBaseURL(event.target.value)} /></label><label className="field"><span>API 协议</span><select value={protocol} onChange={event => setProtocol(event.target.value as UnifiedProviderProfile['protocol'])}><option value="openai-completions">OpenAI Completions</option><option value="openai-responses">OpenAI Responses</option><option value="anthropic-messages">Anthropic Messages</option></select></label><footer><button className="button outline" type="button" onClick={onClose}>取消</button><button className="button primary">继续配置模型</button></footer></form></Dialog>
 }
