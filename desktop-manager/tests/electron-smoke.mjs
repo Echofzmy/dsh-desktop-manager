@@ -127,300 +127,73 @@ try {
   if (!bundledProbe.version || !bundledProbe.port) throw new Error(`Bundled runtime probe was incomplete: ${JSON.stringify(bundledProbe)}`)
 
   await page.getByRole('button', { name: '统一配置', exact: true }).click()
-  await page.locator('.web-host').waitFor()
-  let modelConfigurationUrl
-  for (let attempt = 0; attempt < 300; attempt += 1) {
-    const urls = await application.evaluate(({ webContents }) => webContents.getAllWebContents().map(contents => contents.getURL()))
-    modelConfigurationUrl = urls.find(url => /^http:\/\/127\.0\.0\.1:\d+\/$/u.test(url))
-    if (modelConfigurationUrl) break
-    await new Promise(resolve => setTimeout(resolve, 100))
+  await page.locator('.configuration-page').waitFor()
+  if (await page.locator('.web-host').count()) throw new Error('Unified configuration still renders an embedded DSH Host')
+  const configurationContents = await application.evaluate(({ webContents }) => webContents.getAllWebContents().map(contents => contents.getURL()))
+  if (configurationContents.some(url => /^http:\/\/127\.0\.0\.1:\d+\/$/u.test(url))) {
+    throw new Error(`Unified configuration started a DSH Web Host: ${JSON.stringify(configurationContents)}`)
   }
-  if (!modelConfigurationUrl) throw new Error('Native DSH model configuration host did not load')
-  let configurationMode
+  const configurationViews = await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.contentView.children.length ?? -1)
+  if (configurationViews !== 0) throw new Error(`Unified configuration attached a WebContentsView: ${configurationViews}`)
+  const initialConfiguration = await page.evaluate(() => window.manager.getUnifiedConfiguration())
+  const initialProvider = initialConfiguration.providers.find(provider => provider.id === 'sub2api')
+  if (!initialProvider?.hasApiKey || !initialProvider.models.some(model => model.id === fixtureModelId)) {
+    throw new Error(`Native configuration did not read the isolated fixture: ${JSON.stringify(initialConfiguration)}`)
+  }
+  if (JSON.stringify(initialConfiguration).includes('electron-fixture')) throw new Error('Native configuration returned credential plaintext')
+
+  await page.locator('.configuration-row').filter({ hasText: '默认权限' }).locator('select').selectOption('read-only')
+  await page.locator('.configuration-row').filter({ hasText: '忙碌时按 Enter' }).locator('select').selectOption('queue')
+  await page.getByLabel('默认 Agent preset').fill('minimal')
+  await page.getByLabel('默认模型').selectOption({ label: 'DeepSeek / DeepSeek-V4-Flash' })
+  await page.getByLabel('默认思考深度').selectOption('high')
+  await page.locator('.configuration-nav').getByRole('button', { name: '模型', exact: true }).click()
+  const providerCard = page.locator('.provider-profile').filter({ hasText: 'sub2api' })
+  await providerCard.locator('.provider-summary').click()
+  await providerCard.getByLabel('显示名称').fill('Smoke Gateway')
+  await providerCard.getByLabel('请求超时（分钟）').fill('15')
+  await providerCard.getByLabel('流空闲超时（分钟）').fill('10')
+  await providerCard.getByLabel('API Key').fill(`rotated-${sentinel}`)
+  await page.getByRole('button', { name: '保存更改' }).click()
+  let savedConfiguration
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    configurationMode = await application.evaluate(async ({ webContents }, url) => {
-      const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-      if (!contents) throw new Error('Configuration WebContents is missing')
-      return contents.executeJavaScript(`(() => {
-        const guard = document.getElementById('dsh-manager-configuration-guard')
-        const roots = [...document.body.children].filter(element => element !== guard)
-        return {
-          styleInstalled: Boolean(document.getElementById('dsh-manager-configuration-style')),
-          guardInstalled: Boolean(guard),
-          applicationRootsHidden: roots.length > 0 && roots.every(element => {
-            const style = getComputedStyle(element)
-            return style.visibility === 'hidden' && style.pointerEvents === 'none'
-          }),
-        }
-      })()`)
-    }, modelConfigurationUrl)
-    if (configurationMode.styleInstalled && configurationMode.guardInstalled && configurationMode.applicationRootsHidden) break
+    savedConfiguration = await page.evaluate(() => window.manager.getUnifiedConfiguration())
+    const provider = savedConfiguration.providers.find(candidate => candidate.id === 'sub2api')
+    if (provider?.displayName === 'Smoke Gateway' && provider.hasApiKey && provider.timeoutMs === 900000 && provider.streamIdleTimeoutMs === 600000 && savedConfiguration.defaultReasoningEffort === 'high') break
     await new Promise(resolve => setTimeout(resolve, 100))
   }
-  if (!configurationMode?.styleInstalled || !configurationMode.guardInstalled || !configurationMode.applicationRootsHidden) {
-    throw new Error(`Embedded DSH is not configuration-only: ${JSON.stringify(configurationMode)}`)
+  const savedProvider = savedConfiguration.providers.find(provider => provider.id === 'sub2api')
+  if (savedProvider?.displayName !== 'Smoke Gateway' || !savedProvider.hasApiKey || savedProvider.timeoutMs !== 900000 || savedProvider.streamIdleTimeoutMs !== 600000 || savedConfiguration.defaultReasoningEffort !== 'high' || savedConfiguration.defaultPermission !== 'read-only' || savedConfiguration.busyEnter !== 'queue' || savedConfiguration.defaultAgentPreset !== 'minimal') {
+    throw new Error(`Native configuration controls did not persist: ${JSON.stringify(savedConfiguration)}`)
   }
-  const initialModelHostSettings = await dshRpc(modelConfigurationUrl, 'settings.describe', {})
-  const guardedProvider = initialModelHostSettings.namespaces.find(namespace => namespace.ns === 'llm-pi-ai')?.user?.providers?.sub2api
-  if (!guardedProvider?.models?.some(model => model.id === fixtureModelId)) {
-    throw new Error(`Refusing to interact with a model Host outside the sentinel fixture: ${JSON.stringify(initialModelHostSettings.namespaces.map(namespace => ({ ns: namespace.ns, user: namespace.user })) )}`)
-  }
-  const modelHostBounds = await page.locator('.web-host').evaluate(element => {
-    const rect = element.getBoundingClientRect()
-    return { width: rect.width, height: rect.height }
-  })
-  if (modelHostBounds.width < 100 || modelHostBounds.height < 100) throw new Error(`Model configuration host collapsed: ${JSON.stringify(modelHostBounds)}`)
+  if (JSON.stringify(savedConfiguration).includes(`rotated-${sentinel}`)) throw new Error('Saved configuration returned credential plaintext')
+  const sharedCredentialPath = join(userData, 'model-configuration', 'home', '.credentials.yaml')
+  const sharedCredential = await readFile(sharedCredentialPath, 'utf8')
+  if (!sharedCredential.includes(`rotated-${sentinel}`)) throw new Error('Native API Key field did not update the isolated credential file')
+  if (process.platform !== 'win32' && ((await stat(sharedCredentialPath)).mode & 0o077) !== 0) throw new Error('Shared credential file is not owner-only')
   const credentialOverlayPath = join(userData, 'model-configuration', 'credentials.cordis.yml')
   const credentialOverlay = await readFile(credentialOverlayPath, 'utf8')
   if (!credentialOverlay.includes('.credentials.yaml') || credentialOverlay.includes('API_KEY')) throw new Error('Credential overlay contains the wrong data')
   if (process.platform !== 'win32' && ((await stat(credentialOverlayPath)).mode & 0o077) !== 0) throw new Error('Credential overlay is not owner-only')
-  await application.evaluate(async ({ webContents }, url) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) throw new Error('Model configuration WebContents is missing')
-    return contents.executeJavaScript(`(() => {
-      const button = [...document.querySelectorAll('button')].find(item => ['继续', 'Continue'].includes(item.textContent?.trim()))
-      if (button) button.click()
-      return Boolean(button)
-    })()`)
-  }, modelConfigurationUrl)
-  const sharedCredentialPath = join(userData, 'model-configuration', 'home', '.credentials.yaml')
-  if (process.platform !== 'win32' && ((await stat(sharedCredentialPath)).mode & 0o077) !== 0) throw new Error('Shared DSH credential file is not owner-only')
-  await page.waitForTimeout(500)
-  await page.getByTitle('打开统一设置').click()
-  let nativeSettingsText = ''
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    nativeSettingsText = await application.evaluate(async ({ webContents }, url) => {
-      const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-      return contents ? contents.executeJavaScript('document.body.innerText') : ''
-    }, modelConfigurationUrl)
-    if (nativeSettingsText.includes('通用设置') && nativeSettingsText.includes('权限')) break
-    await new Promise(resolve => setTimeout(resolve, 100))
-  }
-  if (!nativeSettingsText.includes('通用设置') || !nativeSettingsText.includes('权限')) {
-    throw new Error('Manager did not open native DSH General settings with permission defaults')
-  }
-  const permissionMenuPoint = await application.evaluate(async ({ webContents }, url) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) throw new Error('Configuration WebContents is missing')
-    return contents.executeJavaScript(`(() => {
-      const button = [...document.querySelectorAll('button[aria-haspopup="menu"]')].find(element => {
-        const rowText = element.parentElement?.parentElement?.textContent || ''
-        return rowText.includes('权限') || rowText.includes('Permission')
-      })
-      const rect = button?.getBoundingClientRect()
-      return rect ? { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) } : null
-    })()`)
-  }, modelConfigurationUrl)
-  if (!permissionMenuPoint) throw new Error('Permission preset menu control is missing')
-  await application.evaluate(({ webContents }, { url, point }) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) throw new Error('Configuration WebContents is missing')
-    contents.sendInputEvent({ type: 'mouseDown', x: point.x, y: point.y, button: 'left', clickCount: 1 })
-    contents.sendInputEvent({ type: 'mouseUp', x: point.x, y: point.y, button: 'left', clickCount: 1 })
-  }, { url: modelConfigurationUrl, point: permissionMenuPoint })
-  await new Promise(resolve => setTimeout(resolve, 100))
-  const permissionMenuVisible = await application.evaluate(async ({ webContents }, url) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) throw new Error('Configuration WebContents is missing')
-    return contents.executeJavaScript(`(() => {
-      const menu = document.querySelector('[role="menu"]')
-      return Boolean(menu?.hasAttribute('data-dsh-manager-configuration-visible') && getComputedStyle(menu).visibility === 'visible' && getComputedStyle(menu).pointerEvents !== 'none')
-    })()`)
-  }, modelConfigurationUrl)
-  if (!permissionMenuVisible) throw new Error('Portaled Permission preset menu is hidden in unified Settings')
-  await application.evaluate(({ webContents }, url) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) throw new Error('Configuration WebContents is missing')
-    contents.sendInputEvent({ type: 'keyDown', keyCode: 'ESC' })
-    contents.sendInputEvent({ type: 'keyUp', keyCode: 'ESC' })
-  }, modelConfigurationUrl)
-  await new Promise(resolve => setTimeout(resolve, 100))
-  const menuEscapeResult = await application.evaluate(async ({ webContents }, url) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) throw new Error('Configuration WebContents is missing')
-    return contents.executeJavaScript(`({
-      menuClosed: !document.querySelector('[role="menu"]'),
-      settingsOpen: [...document.querySelectorAll('[role="dialog"]')].some(dialog => dialog.hasAttribute('data-dsh-manager-configuration-visible') && ((dialog.textContent || '').includes('通用设置') || (dialog.textContent || '').includes('General'))),
-    })`)
-  }, modelConfigurationUrl)
-  if (!menuEscapeResult.menuClosed || !menuEscapeResult.settingsOpen) throw new Error(`Permission menu Escape closed unified Settings: ${JSON.stringify(menuEscapeResult)}`)
-  await application.evaluate(async ({ webContents }, url) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) throw new Error('Configuration WebContents is missing')
-    return contents.executeJavaScript(`(() => {
-      const labels = element => [element.getAttribute('aria-label'), element.getAttribute('title'), element.textContent].filter(Boolean).map(value => value.trim())
-      const models = [...document.querySelectorAll('button,[role="tab"],[role="menuitem"]')].find(element => labels(element).some(label => ['模型', 'Models'].includes(label)))
-      models?.click()
-      return Boolean(models)
-    })()`)
-  }, modelConfigurationUrl)
-  let nativeModelsText = ''
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    nativeModelsText = await application.evaluate(async ({ webContents }, url) => {
-      const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-      return contents ? contents.executeJavaScript('document.body.innerText') : ''
-    }, modelConfigurationUrl)
-    if (nativeModelsText.includes('添加自定义提供方')) break
-    await new Promise(resolve => setTimeout(resolve, 100))
-  }
-  if (!nativeModelsText.includes('添加自定义提供方')) throw new Error('Manager did not open the native DSH Models section')
-  const settingsControls = await application.evaluate(async ({ webContents }, url) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) throw new Error('Configuration WebContents is missing')
-    return contents.executeJavaScript(`(() => {
-      const settingsDialog = [...document.querySelectorAll('[role="dialog"]')].find(dialog => (dialog.textContent || '').includes('添加自定义提供方'))
-      const close = settingsDialog ? [...settingsDialog.querySelectorAll('button')].find(button => ['关闭', '关闭设置', 'Close', 'Close settings'].includes(button.getAttribute('aria-label') || button.getAttribute('title') || button.textContent?.trim())) : null
-      const rect = close?.getBoundingClientRect()
-      return rect ? { close: { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) }, mask: { x: 2, y: 2 } } : null
-    })()`)
-  }, modelConfigurationUrl)
-  if (!settingsControls) throw new Error('Native Settings close control is missing')
-  await application.evaluate(({ webContents }, { url, controls }) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) throw new Error('Configuration WebContents is missing')
-    contents.sendInputEvent({ type: 'keyDown', keyCode: 'ESC' })
-    contents.sendInputEvent({ type: 'keyUp', keyCode: 'ESC' })
-    for (const point of [controls.close, controls.mask]) {
-      contents.sendInputEvent({ type: 'mouseDown', x: point.x, y: point.y, button: 'left', clickCount: 1 })
-      contents.sendInputEvent({ type: 'mouseUp', x: point.x, y: point.y, button: 'left', clickCount: 1 })
-    }
-  }, { url: modelConfigurationUrl, controls: settingsControls })
-  await new Promise(resolve => setTimeout(resolve, 100))
-  const settingsLock = await application.evaluate(async ({ webContents }, url) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) throw new Error('Configuration WebContents is missing')
-    return contents.executeJavaScript(`(() => {
-      const stillOpen = [...document.querySelectorAll('[role="dialog"]')].some(dialog => (dialog.textContent || '').includes('添加自定义提供方'))
-      const guard = document.getElementById('dsh-manager-configuration-guard')
-      const roots = [...document.body.children].filter(element => element !== guard)
-      return { stillOpen, applicationRootsDisabled: roots.every(element => getComputedStyle(element).pointerEvents === 'none') }
-    })()`)
-  }, modelConfigurationUrl)
-  if (!settingsLock.stillOpen || !settingsLock.applicationRootsDisabled) {
-    throw new Error(`Unified Settings can escape to embedded conversation UI: ${JSON.stringify(settingsLock)}`)
-  }
-  await application.evaluate(({ webContents }, url) => new Promise((resolve, reject) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) { reject(new Error('Configuration WebContents is missing')); return }
-    contents.once('did-finish-load', () => resolve(undefined))
-    contents.reload()
-  }), modelConfigurationUrl)
-  let reloadGuard
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    reloadGuard = await application.evaluate(async ({ webContents }, url) => {
-      const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-      if (!contents) throw new Error('Configuration WebContents is missing')
-      return contents.executeJavaScript(`(() => {
-        const guard = document.getElementById('dsh-manager-configuration-guard')
-        const roots = [...document.body.children].filter(element => element !== guard)
-        const settingsOpen = [...document.querySelectorAll('[role="dialog"]')].some(dialog => dialog.hasAttribute('data-dsh-manager-configuration-visible') && ((dialog.textContent || '').includes('通用设置') || (dialog.textContent || '').includes('General')))
-        return { styleInstalled: Boolean(document.getElementById('dsh-manager-configuration-style')), settingsOpen, applicationRootsDisabled: roots.length > 0 && roots.every(element => getComputedStyle(element).pointerEvents === 'none') }
-      })()`)
-    }, modelConfigurationUrl)
-    if (reloadGuard.styleInstalled && reloadGuard.settingsOpen && reloadGuard.applicationRootsDisabled) break
-    await new Promise(resolve => setTimeout(resolve, 100))
-  }
-  if (!reloadGuard?.styleInstalled || !reloadGuard.settingsOpen || !reloadGuard.applicationRootsDisabled) {
-    throw new Error(`Configuration-only mode did not survive reload: ${JSON.stringify(reloadGuard)}`)
-  }
-  const nestedVisible = await application.evaluate(async ({ webContents }, url) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) throw new Error('Configuration WebContents is missing')
-    return contents.executeJavaScript(`new Promise(resolve => {
-      const root = document.createElement('div')
-      root.setAttribute('role', 'presentation')
-      const nested = document.createElement('div')
-      nested.setAttribute('role', 'dialog')
-      nested.setAttribute('aria-label', 'Choose models to add')
-      nested.id = 'dsh-manager-nested-dialog-smoke'
-      const cancel = document.createElement('button')
-      cancel.textContent = 'Cancel'
-      cancel.addEventListener('click', () => root.remove())
-      nested.appendChild(cancel)
-      root.appendChild(nested)
-      document.body.appendChild(root)
-      setTimeout(() => resolve(nested.hasAttribute('data-dsh-manager-configuration-visible') && getComputedStyle(nested).visibility === 'visible'), 50)
-    })`)
-  }, modelConfigurationUrl)
-  if (!nestedVisible) throw new Error('Approved nested Settings dialog was not exposed')
-  await application.evaluate(({ webContents }, url) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) throw new Error('Configuration WebContents is missing')
-    contents.sendInputEvent({ type: 'keyDown', keyCode: 'ESC' })
-    contents.sendInputEvent({ type: 'keyUp', keyCode: 'ESC' })
-  }, modelConfigurationUrl)
-  await new Promise(resolve => setTimeout(resolve, 100))
-  const nestedEscapeResult = await application.evaluate(async ({ webContents }, url) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) throw new Error('Configuration WebContents is missing')
-    return contents.executeJavaScript(`({
-      nestedClosed: !document.getElementById('dsh-manager-nested-dialog-smoke'),
-      settingsOpen: [...document.querySelectorAll('[role="dialog"]')].some(dialog => dialog.hasAttribute('data-dsh-manager-configuration-visible') && ((dialog.textContent || '').includes('通用设置') || (dialog.textContent || '').includes('General'))),
-    })`)
-  }, modelConfigurationUrl)
-  if (!nestedEscapeResult.nestedClosed || !nestedEscapeResult.settingsOpen) {
-    throw new Error(`Nested Escape closed unified Settings: ${JSON.stringify(nestedEscapeResult)}`)
-  }
-  const generalNavigationPoint = await application.evaluate(async ({ webContents }, url) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) throw new Error('Configuration WebContents is missing')
-    return contents.executeJavaScript(`(() => {
-      const labels = element => [element.getAttribute('aria-label'), element.getAttribute('title'), element.textContent].filter(Boolean).map(value => value.trim())
-      const general = [...document.querySelectorAll('button,[role="tab"],[role="menuitem"]')].find(element => labels(element).some(label => ['通用设置', 'General'].includes(label)))
-      const rect = general?.getBoundingClientRect()
-      return rect ? { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) } : null
-    })()`)
-  }, modelConfigurationUrl)
-  if (!generalNavigationPoint) throw new Error('General Settings navigation control is missing')
-  await application.evaluate(({ webContents }, { url, point }) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) throw new Error('Configuration WebContents is missing')
-    contents.sendInputEvent({ type: 'mouseDown', x: point.x, y: point.y, button: 'left', clickCount: 1 })
-    contents.sendInputEvent({ type: 'mouseUp', x: point.x, y: point.y, button: 'left', clickCount: 1 })
-  }, { url: modelConfigurationUrl, point: generalNavigationPoint })
-  await application.evaluate(({ webContents }, url) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) throw new Error('Configuration WebContents is missing')
-    contents.sendInputEvent({ type: 'keyDown', keyCode: 'TAB' })
-    contents.sendInputEvent({ type: 'keyUp', keyCode: 'TAB' })
-  }, modelConfigurationUrl)
-  const unrelatedDialogHidden = await application.evaluate(async ({ webContents }, url) => {
-    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
-    if (!contents) throw new Error('Configuration WebContents is missing')
-    return contents.executeJavaScript(`new Promise(resolve => {
-      const root = document.createElement('div')
-      root.setAttribute('role', 'presentation')
-      const unrelated = document.createElement('div')
-      unrelated.setAttribute('role', 'dialog')
-      unrelated.setAttribute('aria-label', 'Unrelated dialog')
-      unrelated.textContent = 'UNRELATED_DIALOG_SENTINEL'
-      root.appendChild(unrelated)
-      document.body.appendChild(root)
-      setTimeout(() => {
-        const style = getComputedStyle(unrelated)
-        const result = !unrelated.hasAttribute('data-dsh-manager-configuration-visible') && style.visibility === 'hidden' && style.pointerEvents === 'none'
-        root.remove()
-        resolve(result)
-      }, 50)
-    })`)
-  }, modelConfigurationUrl)
-  if (!unrelatedDialogHidden) throw new Error('Configuration-only mode exposed an unrelated DSH dialog')
-  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.webContents.send('manager:menu:command', 'home'))
-  await page.getByRole('heading', { name: '概览' }).waitFor()
-  await page.waitForTimeout(200)
-  const attachedViews = await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.contentView.children.length ?? -1)
-  if (attachedViews !== 0) throw new Error(`Model WebContentsView remained attached after menu navigation: ${attachedViews}`)
-  let modelHostClosed = false
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    try {
-      await fetch(modelConfigurationUrl, { signal: AbortSignal.timeout(250) })
-    } catch {
-      modelHostClosed = true
-      break
-    }
-    await new Promise(resolve => setTimeout(resolve, 100))
-  }
-  if (!modelHostClosed) throw new Error('Model configuration host remained alive after leaving Models')
+  await page.screenshot({ path: join(artifacts, 'configuration-1440x920.png'), fullPage: true })
+  await page.setViewportSize({ width: 1000, height: 700 })
+  const configurationOverflow = await page.evaluate(() => ({
+    horizontal: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    vertical: document.documentElement.scrollHeight - document.documentElement.clientHeight,
+  }))
+  if (configurationOverflow.horizontal > 0 || configurationOverflow.vertical > 0) throw new Error(`Compact configuration page overflowed: ${JSON.stringify(configurationOverflow)}`)
+  await page.screenshot({ path: join(artifacts, 'configuration-1000x700.png'), fullPage: true })
+  await page.setViewportSize({ width: 1440, height: 920 })
+
+  await providerCard.getByLabel('显示名称').fill('Unsaved Gateway')
+  await page.getByRole('button', { name: '概览', exact: true }).click()
+  const discardDialog = page.getByRole('dialog', { name: '放弃未保存的更改？' })
+  await discardDialog.waitFor()
+  await discardDialog.getByRole('button', { name: '取消' }).click()
+  if (await providerCard.getByLabel('显示名称').inputValue() !== 'Unsaved Gateway') throw new Error('Canceling navigation discarded the provider draft')
+  await providerCard.getByLabel('显示名称').fill('Smoke Gateway')
+  await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent?.includes('保存更改') && button.hasAttribute('disabled')))
+  await page.getByRole('button', { name: '概览', exact: true }).click()
 
   await page.screenshot({ path: join(artifacts, 'home-1440x920.png'), fullPage: true })
   await page.setViewportSize({ width: 1000, height: 700 })
@@ -497,11 +270,14 @@ try {
     }
     const settings = await dshRpc(targetUrl, 'settings.describe', {})
     const defaultModel = settings.namespaces.find(namespace => namespace.ns === 'agent-default-model')?.value
-    if (defaultModel?.provider !== 'deepseek-official') throw new Error(`Managed DSH default is not DeepSeek official: ${JSON.stringify(defaultModel)}`)
+    if (defaultModel?.provider !== 'deepseek-official' || defaultModel?.reasoningEffort !== 'high') throw new Error(`Managed DSH default model or reasoning is wrong: ${JSON.stringify(defaultModel)}`)
+    const piSettings = settings.namespaces.find(namespace => namespace.ns === 'llm-pi-ai')?.value
+    const projectedProvider = piSettings?.providers?.sub2api
+    if (projectedProvider?.timeoutMs !== 900000 || projectedProvider?.streamIdleTimeoutMs !== 600000) throw new Error(`Managed DSH provider timeouts are wrong: ${JSON.stringify(projectedProvider)}`)
     const permission = settings.namespaces.find(namespace => namespace.ns === 'permission')?.value
     const theme = settings.namespaces.find(namespace => namespace.ns === 'ui-theme')?.value
     const conversation = settings.namespaces.find(namespace => namespace.ns === 'ui-conversation')?.value
-    if (permission?.defaultPreset !== 'workspace-write' || theme?.preference !== 'dark' || conversation?.busyEnter !== 'steer') {
+    if (permission?.defaultPreset !== 'read-only' || theme?.preference !== 'dark' || conversation?.busyEnter !== 'queue') {
       throw new Error(`Managed DSH did not inherit unified startup settings: ${JSON.stringify({ permission, theme, conversation })}`)
     }
 

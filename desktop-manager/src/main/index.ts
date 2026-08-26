@@ -10,6 +10,8 @@ import type {
   EmbeddedViewBounds,
   InstallOfficialRuntimeInput,
   RegisterRuntimeInput,
+  SaveUnifiedConfigurationInput,
+  SetUnifiedCredentialInput,
   UpdateSettingsInput,
 } from '../shared/types.js'
 import { InstanceViewManager } from './instance-view-manager.js'
@@ -129,22 +131,9 @@ function registerIpc(): void {
     if (!instance) throw new Error('Instance does not exist')
     await views!.show(instance, assertBounds(rawBounds))
   })
-  handle(IPC.modelViewShow, async (_event, rawBounds: EmbeddedViewBounds, openSettings: boolean) => {
-    if (typeof openSettings !== 'boolean') throw new Error('无效的模型视图操作。')
-    try {
-      const instance = await requiredManager().ensureModelConfiguration()
-      await views!.show(instance, assertBounds(rawBounds))
-      if (!openSettings) return 'host-ready'
-      return views!.openConfigurationSettings(instance.id)
-    } catch (error) {
-      if (error instanceof Error && error.message === '统一配置页面已经关闭。') return 'unavailable'
-      throw error
-    }
-  })
-  handle(IPC.modelViewClose, async () => {
-    views!.hide()
-    await requiredManager().stopModelConfiguration()
-  })
+  handle(IPC.unifiedConfigurationGet, () => requiredManager().getUnifiedConfiguration())
+  handle(IPC.unifiedConfigurationSave, (_event, input: SaveUnifiedConfigurationInput) => requiredManager().saveUnifiedConfiguration(input))
+  handle(IPC.unifiedCredentialSet, (_event, input: SetUnifiedCredentialInput) => requiredManager().setUnifiedCredential(input))
   handle(IPC.viewHide, () => views!.hide())
 }
 

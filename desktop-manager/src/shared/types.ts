@@ -234,7 +234,56 @@ export interface EmbeddedViewBounds {
   height: number
 }
 
-export type ModelConfigurationViewResult = 'host-ready' | 'opened' | 'already-open' | 'dialog-blocked' | 'unavailable'
+export interface UnifiedModelProfile {
+  id: string
+  name?: string
+  contextWindow?: number
+  maxTokens?: number
+}
+
+export type UnifiedProviderProtocol = 'deepseek' | 'openai-completions' | 'openai-responses' | 'anthropic-messages'
+
+export interface UnifiedProviderProfile {
+  id: string
+  kind: 'deepseek' | 'catalog' | 'custom'
+  displayName: string
+  protocol: UnifiedProviderProtocol
+  apiKeyRef: string
+  hasApiKey: boolean
+  baseURL?: string
+  timeoutMs?: number | null
+  streamIdleTimeoutMs?: number | null
+  models: UnifiedModelProfile[]
+}
+
+export type UnifiedReasoningEffort = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+export interface UnifiedConfiguration {
+  providers: UnifiedProviderProfile[]
+  defaultModel?: { provider: string; model: string }
+  defaultReasoningEffort?: UnifiedReasoningEffort
+  defaultPermission: 'read-only' | 'workspace-write' | 'danger-full-access'
+  defaultAgentPreset: string
+  locale: 'system' | 'zh' | 'en'
+  theme: 'system' | 'light' | 'dark'
+  busyEnter: 'steer' | 'queue'
+}
+
+export interface SaveUnifiedConfigurationInput {
+  providers: Array<Omit<UnifiedProviderProfile, 'hasApiKey'>>
+  defaultModel?: { provider: string; model: string }
+  defaultReasoningEffort?: UnifiedReasoningEffort
+  defaultPermission: UnifiedConfiguration['defaultPermission']
+  defaultAgentPreset: string
+  locale: UnifiedConfiguration['locale']
+  theme: UnifiedConfiguration['theme']
+  busyEnter: UnifiedConfiguration['busyEnter']
+}
+
+export interface SetUnifiedCredentialInput {
+  ref: string
+  value: string | null
+}
 
 export interface ManagerApi {
   getSnapshot(): Promise<ManagerSnapshot>
@@ -271,8 +320,9 @@ export interface ManagerApi {
   chooseDirectory(): Promise<string | null>
   openExternal(instanceId: string): Promise<void>
   showInstanceView(instanceId: string, bounds: EmbeddedViewBounds): Promise<void>
-  showModelConfiguration(bounds: EmbeddedViewBounds, openSettings: boolean): Promise<ModelConfigurationViewResult>
-  closeModelConfiguration(): Promise<void>
+  getUnifiedConfiguration(): Promise<UnifiedConfiguration>
+  saveUnifiedConfiguration(input: SaveUnifiedConfigurationInput): Promise<UnifiedConfiguration>
+  setUnifiedCredential(input: SetUnifiedCredentialInput): Promise<UnifiedConfiguration>
   hideInstanceView(): Promise<void>
   onSnapshotChanged(listener: (snapshot: ManagerSnapshot) => void): () => void
   onMenuCommand(listener: (command: 'home' | 'runtimes' | 'models' | 'settings' | 'new-instance') => void): () => void

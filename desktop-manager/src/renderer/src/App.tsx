@@ -4,6 +4,8 @@ import {
   ArchiveRestore,
   Boxes,
   Check,
+  ChevronDown,
+  ChevronRight,
   CircleStop,
   Copy,
   Database,
@@ -14,10 +16,12 @@ import {
   Gauge,
   Globe2,
   LayoutDashboard,
+  KeyRound,
   Play,
   Plus,
   RefreshCw,
   RotateCw,
+  Save,
   Settings as SettingsIcon,
   ShieldCheck,
   SlidersHorizontal,
@@ -28,7 +32,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import appIcon from '../../../build/icon-source/dsh-1024.png'
-import type { EnvironmentRecord, InstanceRecord, ManagerSnapshot, OfficialUpdateInfo, RuntimeRecord, RuntimeTaskKind } from '../../shared/types'
+import type { EnvironmentRecord, InstanceRecord, ManagerSnapshot, OfficialUpdateInfo, RuntimeRecord, RuntimeTaskKind, SaveUnifiedConfigurationInput, UnifiedConfiguration, UnifiedModelProfile, UnifiedProviderProfile } from '../../shared/types'
 
 const EMPTY: ManagerSnapshot = {
   settings: { openMode: 'embedded', checkUpdatesOnStartup: true },
@@ -69,8 +73,17 @@ export function App(): ReactNode {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [log, setLog] = useState<LogState | null>(null)
+  const configurationDirty = useRef(false)
+  const currentPage = useRef<Page>(page)
 
-  const navigate = (next: Page): void => { void window.manager.hideInstanceView(); setPage(next) }
+  const commitNavigation = (next: Page): void => { configurationDirty.current = false; currentPage.current = next; void window.manager.hideInstanceView(); setPage(next) }
+  const navigate = (next: Page): void => {
+    if (currentPage.current.kind === 'models' && next.kind !== 'models' && configurationDirty.current) {
+      setConfirmation({ title: '放弃未保存的更改？', detail: '统一配置中的修改和尚未保存的 API Key 将被丢弃。', actionLabel: '放弃更改', action: async () => commitNavigation(next) })
+      return
+    }
+    commitNavigation(next)
+  }
   useEffect(() => { void window.manager.getSnapshot().then(setSnapshot).catch(reason => setError(errorText(reason))); return window.manager.onSnapshotChanged(setSnapshot) }, [])
   useEffect(() => window.manager.onMenuCommand(command => {
     if (command === 'new-instance') setModal('instance')
@@ -112,7 +125,7 @@ export function App(): ReactNode {
       <main className="main-content">
         {page.kind === 'home' && <HomePage snapshot={snapshot} busy={busy} onModal={setModal} onOpen={id => navigate({ kind: 'instance', id })} onRun={run} onLog={showInstanceLog} onConfirm={confirm} onUseTemplate={setTemplateUse} />}
         {page.kind === 'runtimes' && <RuntimesPage snapshot={snapshot} busy={busy} onModal={setModal} onRun={run} onLog={showTaskLog} onConfirm={confirm} onError={setError} />}
-        {page.kind === 'models' && <ModelsPage hasRuntime={snapshot.runtimes.some(runtime => runtime.source !== 'local' && runtime.preflight.ready && !runtime.taskBlocked)} runningCount={snapshot.instances.filter(instance => instance.status === 'running').length} obscured={obscured} onError={setError} />}
+        {page.kind === 'models' && <ModelsPage runningCount={snapshot.instances.filter(instance => instance.status === 'running').length} onDirtyChange={value => { configurationDirty.current = value }} onError={setError} />}
         {page.kind === 'settings' && <SettingsPage snapshot={snapshot} busy={busy} onModal={setModal} onRun={run} onConfirm={confirm} />}
         {page.kind === 'instance' && selectedInstance && <InstancePage instance={selectedInstance} snapshot={snapshot} busy={busy} obscured={obscured} onRun={run} onLog={showInstanceLog} onError={setError} onDelete={() => confirm({ title: '删除实例', detail: `删除“${selectedInstance.name}”的元数据和日志。生产环境数据不会被删除。`, actionLabel: '删除实例', action: async () => { await window.manager.deleteInstance(selectedInstance.id, false); navigate({ kind: 'home' }) } })} onSaveTemplate={() => setTemplateSource(selectedInstance.id)} />}
       </main>
@@ -130,55 +143,172 @@ export function App(): ReactNode {
   </div>
 }
 
-type ModelPhase = 'idle' | 'starting' | 'blocked' | 'settings' | 'unavailable' | 'failed'
-function ModelsPage({ hasRuntime, runningCount, obscured, onError }: { hasRuntime: boolean; runningCount: number; obscured: boolean; onError: (message: string) => void }): ReactNode {
-  const host = useRef<HTMLDivElement>(null)
-  const requestGeneration = useRef(0)
-  const [phase, setPhase] = useState<ModelPhase>('idle')
-  const show = (openSettings = true, announce = true): void => {
-    const element = host.current
-    if (!element || !hasRuntime || obscured) return
-    const generation = openSettings ? ++requestGeneration.current : requestGeneration.current
-    if (openSettings && announce) setPhase('starting')
-    const rect = element.getBoundingClientRect()
-    void window.manager.showModelConfiguration({ x: rect.x, y: rect.y, width: rect.width, height: rect.height }, openSettings).then(result => {
-      if (!openSettings || generation !== requestGeneration.current) return
-      if (result === 'opened' || result === 'already-open') setPhase('settings')
-      else if (result === 'dialog-blocked') setPhase('blocked')
-      else setPhase('unavailable')
-    }).catch(reason => {
-      if (generation !== requestGeneration.current) return
-      setPhase('failed')
-      onError(errorText(reason))
+type UnifiedSection = 'general' | 'models'
+type UnifiedModelPatch = { id?: string; name?: string | undefined; contextWindow?: number | undefined; maxTokens?: number | undefined }
+
+function timeoutMinutes(value: number | null | undefined): string { return typeof value === 'number' ? String(value / 60_000) : '' }
+function timeoutMilliseconds(value: string): number | undefined {
+  if (!value.trim()) return undefined
+  return Math.round(Number(value) * 60_000)
+}
+
+function configurationInput(value: UnifiedConfiguration): SaveUnifiedConfigurationInput {
+  return {
+    ...value,
+    providers: value.providers.map(({ hasApiKey: _hasApiKey, ...provider }) => provider),
+  }
+}
+
+function ModelsPage({ runningCount, onDirtyChange, onError }: { runningCount: number; onDirtyChange: (value: boolean) => void; onError: (message: string) => void }): ReactNode {
+  const [section, setSection] = useState<UnifiedSection>('general')
+  const [configuration, setConfiguration] = useState<UnifiedConfiguration | null>(null)
+  const [draft, setDraft] = useState<UnifiedConfiguration | null>(null)
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({})
+  const [clearingKey, setClearingKey] = useState<UnifiedProviderProfile | null>(null)
+  const [adding, setAdding] = useState(false)
+  const [removing, setRemoving] = useState<UnifiedProviderProfile | null>(null)
+  const [riskOpen, setRiskOpen] = useState(false)
+  const [riskAcknowledged, setRiskAcknowledged] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  const load = async (): Promise<void> => {
+    try {
+      const next = await window.manager.getUnifiedConfiguration()
+      setConfiguration(next)
+      setDraft(structuredClone(next))
+      setKeyDrafts({})
+    } catch (error) { onError(errorText(error)) }
+  }
+  useEffect(() => { void load() }, [])
+
+  const patchProvider = (id: string, mutate: (provider: UnifiedProviderProfile) => UnifiedProviderProfile): void => {
+    setDraft(current => current ? { ...current, providers: current.providers.map(provider => provider.id === id ? mutate(provider) : provider) } : current)
+  }
+  const patchModel = (providerId: string, index: number, patch: UnifiedModelPatch): void => {
+    setDraft(current => {
+      if (!current) return current
+      const provider = current.providers.find(candidate => candidate.id === providerId)
+      const previousId = provider?.models[index]?.id
+      const providers = current.providers.map(candidate => candidate.id !== providerId ? candidate : { ...candidate, models: candidate.models.map((model, at) => {
+        if (at !== index) return model
+        const next: UnifiedModelProfile = { ...model }
+        if (patch.id !== undefined) next.id = patch.id
+        if ('name' in patch) {
+          if (patch.name === undefined) delete next.name
+          else next.name = patch.name
+        }
+        if ('contextWindow' in patch) {
+          if (patch.contextWindow === undefined) delete next.contextWindow
+          else next.contextWindow = patch.contextWindow
+        }
+        if ('maxTokens' in patch) {
+          if (patch.maxTokens === undefined) delete next.maxTokens
+          else next.maxTokens = patch.maxTokens
+        }
+        return next
+      }) })
+      const defaultModel = current.defaultModel?.provider === providerId && current.defaultModel.model === previousId && patch.id !== undefined
+        ? { provider: providerId, model: patch.id }
+        : current.defaultModel
+      const { defaultModel: _previousDefault, ...rest } = current
+      return { ...rest, providers, ...(defaultModel ? { defaultModel } : {}) }
     })
   }
-  useLayoutEffect(() => {
-    const element = host.current
-    if (!element || !hasRuntime || obscured) {
-      requestGeneration.current += 1
-      void window.manager.hideInstanceView()
-      return
-    }
-    show()
-    const observer = new ResizeObserver(() => show(false, false))
-    observer.observe(element)
-    return () => {
-      requestGeneration.current += 1
-      observer.disconnect()
-      void window.manager.closeModelConfiguration()
-    }
-  }, [hasRuntime, obscured, onError])
+  const deleteModel = (providerId: string, index: number): void => {
+    setDraft(current => {
+      if (!current) return current
+      const removedId = current.providers.find(provider => provider.id === providerId)?.models[index]?.id
+      const providers = current.providers.map(provider => provider.id === providerId ? { ...provider, models: provider.models.filter((_model, at) => at !== index) } : provider)
+      if (current.defaultModel?.provider === providerId && current.defaultModel.model === removedId) {
+        const { defaultModel: _defaultModel, ...rest } = current
+        return { ...rest, providers }
+      }
+      return { ...current, providers }
+    })
+  }
+  const save = async (): Promise<void> => {
+    if (!draft || saving) return
+    setSaving(true)
+    try {
+      let next = await window.manager.saveUnifiedConfiguration(configurationInput(draft))
+      let credentialChanged = false
+      for (const provider of draft.providers) {
+        const key = keyDrafts[provider.id]?.trim()
+        if (key) {
+          next = await window.manager.setUnifiedCredential({ ref: provider.apiKeyRef, value: key })
+          credentialChanged = true
+        }
+      }
+      if (credentialChanged) next = await window.manager.saveUnifiedConfiguration(configurationInput(draft))
+      setConfiguration(next)
+      setDraft(structuredClone(next))
+      setKeyDrafts({})
+    } catch (error) {
+      onError(`${errorText(error)} 配置已重新加载，请确认后重试。`)
+      await load()
+    } finally { setSaving(false) }
+  }
+  const dirty = configuration !== null && draft !== null && (JSON.stringify(configurationInput(configuration)) !== JSON.stringify(configurationInput(draft)) || Object.values(keyDrafts).some(value => value.trim()))
+  useEffect(() => { onDirtyChange(dirty); return () => onDirtyChange(false) }, [dirty, onDirtyChange])
 
-  const status = !hasRuntime
-    ? '需要经过完整性验证的官方运行时'
-    : phase === 'starting' ? '正在启动统一配置…'
-      : phase === 'blocked' ? '请先完成当前 DSH 对话框，然后重新打开统一设置'
-        : phase === 'unavailable' ? '无法自动定位统一设置，请在 DSH 设置中选择相应页面'
-          : phase === 'failed' ? '统一配置启动失败'
-            : runningCount ? `${runningCount} 个运行中实例将在重启后应用统一配置变更`
-              : '模型、权限与常用偏好'
-  const inactive = !hasRuntime || phase === 'idle' || phase === 'starting' || phase === 'failed'
-  return <div className="instance-page"><header className="instance-toolbar"><div className="instance-title"><span className="environment-icon"><SlidersHorizontal size={17} /></span><span><strong>统一配置</strong><small>{status}</small></span></div><div className="toolbar-actions"><IconButton label="打开统一设置" disabled={!hasRuntime || phase === 'starting'} onClick={() => show()}><SettingsIcon size={17} /></IconButton></div></header><div className={`web-host${inactive ? ' inactive' : ''}`} ref={host}>{inactive && <div>{phase === 'failed' ? <Wrench size={28} /> : <Boxes size={28} />}<strong>{!hasRuntime ? '没有可用的官方运行时' : phase === 'failed' ? '无法打开统一配置' : '正在启动统一配置'}</strong><span>{!hasRuntime ? '安装或修复内置、下载的官方 DSH 后重试。' : phase === 'failed' ? '检查顶部错误后重试。' : '正在等待 DSH 设置就绪。'}</span>{phase === 'failed' && <button className="button outline small" onClick={() => show()}>重试</button>}</div>}</div></div>
+  if (!draft) return <div className="configuration-loading"><RefreshCw size={22} className="spin" /><span>正在读取统一配置…</span></div>
+  const modelOptions = draft.providers.flatMap(provider => provider.models.map(model => ({ value: `${provider.id}\u0000${model.id}`, label: `${provider.displayName} / ${model.name || model.id}` })))
+  const defaultModelValue = draft.defaultModel ? `${draft.defaultModel.provider}\u0000${draft.defaultModel.model}` : ''
+
+  return <div className="configuration-page">
+    <header className="configuration-header"><div><h1>统一配置</h1><p>{runningCount ? `${runningCount} 个运行中实例将在重启后应用更改` : '新实例和以后创建的会话会复用这里的设置'}</p></div><button className="button primary" disabled={!dirty || saving} onClick={() => void save()}><Save size={16} />{saving ? '正在保存…' : '保存更改'}</button></header>
+    <div className="configuration-shell">
+      <nav className="configuration-nav" aria-label="统一配置分类"><button className={section === 'general' ? 'active' : ''} onClick={() => setSection('general')}>通用</button><button className={section === 'models' ? 'active' : ''} onClick={() => setSection('models')}>模型</button></nav>
+      <div className="configuration-content">
+        {section === 'general' ? <section className="configuration-section"><h2>通用设置</h2>
+          <ConfigRow title="语言" detail="管理器写入 DSH 的默认界面语言"><select aria-label="语言" value={draft.locale} onChange={event => setDraft({ ...draft, locale: event.target.value as UnifiedConfiguration['locale'] })}><option value="system">跟随系统</option><option value="zh">中文</option><option value="en">English</option></select></ConfigRow>
+          <ConfigRow title="外观" detail="新启动实例使用的主题偏好"><div className="segmented-control">{(['light', 'dark', 'system'] as const).map(value => <button key={value} aria-pressed={draft.theme === value} className={draft.theme === value ? 'active' : ''} onClick={() => setDraft({ ...draft, theme: value })}>{value === 'light' ? '浅色' : value === 'dark' ? '深色' : '跟随系统'}</button>)}</div></ConfigRow>
+          <ConfigRow title="默认权限" detail="只影响以后创建的会话"><select aria-label="默认权限" value={draft.defaultPermission} onChange={event => { const value = event.target.value as UnifiedConfiguration['defaultPermission']; if (value === 'danger-full-access') setRiskOpen(true); else setDraft({ ...draft, defaultPermission: value }) }}><option value="read-only">只读</option><option value="workspace-write">工作区可写</option><option value="danger-full-access">完全访问</option></select></ConfigRow>
+          <ConfigRow title="默认 Agent preset" detail="只影响以后创建的会话"><input aria-label="默认 Agent preset" value={draft.defaultAgentPreset} onChange={event => setDraft({ ...draft, defaultAgentPreset: event.target.value })} /></ConfigRow>
+          <ConfigRow title="忙碌时按 Enter" detail="选择追加排队或立即引导当前回复"><select aria-label="忙碌时按 Enter" value={draft.busyEnter} onChange={event => setDraft({ ...draft, busyEnter: event.target.value as UnifiedConfiguration['busyEnter'] })}><option value="steer">立即引导</option><option value="queue">加入队列</option></select></ConfigRow>
+          <ConfigRow title="默认模型" detail="新会话默认选择的模型"><select aria-label="默认模型" value={defaultModelValue} onChange={event => { const [provider, model] = event.target.value.split('\u0000'); const { defaultModel: _previous, ...rest } = draft; setDraft(provider && model ? { ...rest, defaultModel: { provider, model } } : rest) }}><option value="">使用 DSH 默认值</option>{modelOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></ConfigRow>
+          <ConfigRow title="默认思考深度" detail="新会话使用；模型不支持时由提供方处理"><select aria-label="默认思考深度" value={draft.defaultReasoningEffort ?? ''} onChange={event => { const { defaultReasoningEffort: _previous, ...rest } = draft; setDraft(event.target.value ? { ...rest, defaultReasoningEffort: event.target.value as NonNullable<UnifiedConfiguration['defaultReasoningEffort']> } : rest) }}><option value="">使用模型默认值</option><option value="off">关闭</option><option value="minimal">Minimal</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option></select></ConfigRow>
+        </section> : <section className="configuration-section models-section"><div className="configuration-section-heading"><div><h2>模型</h2><p>API Key 仅写入共享凭据文件，不会回显</p></div><button className="button outline small" onClick={() => setAdding(true)}><Plus size={15} />添加自定义提供方</button></div>
+          <div className="provider-list">{draft.providers.map(provider => <article className={`provider-profile${expanded === provider.id ? ' expanded' : ''}`} key={provider.id}>
+            <button className="provider-summary" aria-expanded={expanded === provider.id} onClick={() => setExpanded(current => current === provider.id ? null : provider.id)}><span className={`credential-dot ${provider.hasApiKey || keyDrafts[provider.id]?.trim() ? 'configured' : ''}`} /><span className="grow"><strong>{provider.displayName}</strong><small>{provider.id} · {provider.protocol === 'deepseek' ? 'DeepSeek API' : provider.protocol}</small></span><span className="provider-key-state">{provider.hasApiKey ? 'API Key 已配置' : 'API Key 未配置'}</span>{expanded === provider.id ? <ChevronDown size={17} /> : <ChevronRight size={17} />}</button>
+            {expanded === provider.id && <div className="provider-editor">
+              <div className="credential-field-row"><label className="field"><span>API Key</span><span className="key-field"><KeyRound size={16} /><input type="password" autoComplete="new-password" value={keyDrafts[provider.id] ?? ''} placeholder={provider.hasApiKey ? '已配置；留空保持不变' : '输入 API Key'} onChange={event => setKeyDrafts(current => ({ ...current, [provider.id]: event.target.value }))} /></span></label>{provider.hasApiKey && <button className="button outline small" onClick={() => setClearingKey(provider)}>清除 Key</button>}</div>
+              {provider.kind === 'custom' && <div className="provider-grid"><label className="field"><span>显示名称</span><input value={provider.displayName} onChange={event => patchProvider(provider.id, current => ({ ...current, displayName: event.target.value }))} /></label><label className="field"><span>API 协议</span><select value={provider.protocol} onChange={event => patchProvider(provider.id, current => ({ ...current, protocol: event.target.value as UnifiedProviderProfile['protocol'] }))}><option value="openai-completions">OpenAI Completions</option><option value="openai-responses">OpenAI Responses</option><option value="anthropic-messages">Anthropic Messages</option></select></label></div>}
+              <label className="field"><span>Base URL</span><input value={provider.baseURL ?? ''} placeholder={provider.kind === 'deepseek' ? 'https://api.deepseek.com' : 'https://api.example.com/v1'} onChange={event => patchProvider(provider.id, current => ({ ...current, baseURL: event.target.value }))} /></label>
+              <div className="provider-grid"><label className="field"><span>请求超时（分钟）</span><input type="number" min="0.1" step="0.1" value={timeoutMinutes(provider.timeoutMs)} placeholder="使用提供方默认值" onChange={event => patchProvider(provider.id, current => { const next = { ...current }; const value = timeoutMilliseconds(event.target.value); if (value === undefined) next.timeoutMs = null; else next.timeoutMs = value; return next })} /></label><label className="field"><span>流空闲超时（分钟）</span><input type="number" min="0.1" step="0.1" value={timeoutMinutes(provider.streamIdleTimeoutMs)} placeholder="DSH 默认 5 分钟" onChange={event => patchProvider(provider.id, current => { const next = { ...current }; const value = timeoutMilliseconds(event.target.value); if (value === undefined) next.streamIdleTimeoutMs = null; else next.streamIdleTimeoutMs = value; return next })} /></label></div>
+              <div className="model-editor"><div className="model-editor-heading"><span>模型</span><button className="button outline small" onClick={() => patchProvider(provider.id, current => ({ ...current, models: [...current.models, { id: '' }] }))}><Plus size={14} />添加模型</button></div>{provider.models.map((model, index) => <div className="model-row" key={`${provider.id}:${index}`}><input aria-label={`模型 ID ${index + 1}`} placeholder="模型 ID" value={model.id} onChange={event => patchModel(provider.id, index, { id: event.target.value })} /><input aria-label={`模型名称 ${index + 1}`} placeholder="显示名称（可选）" value={model.name ?? ''} onChange={event => patchModel(provider.id, index, { name: event.target.value || undefined })} /><input aria-label={`上下文窗口 ${index + 1}`} inputMode="numeric" placeholder="上下文窗口" value={model.contextWindow ?? ''} onChange={event => patchModel(provider.id, index, { contextWindow: event.target.value ? Number(event.target.value) : undefined })} /><input aria-label={`最大输出 ${index + 1}`} inputMode="numeric" placeholder="最大输出" value={model.maxTokens ?? ''} onChange={event => patchModel(provider.id, index, { maxTokens: event.target.value ? Number(event.target.value) : undefined })} /><IconButton danger label="删除模型" onClick={() => deleteModel(provider.id, index)}><Trash2 size={15} /></IconButton></div>)}</div>
+              {provider.kind !== 'deepseek' && <footer className="provider-footer"><button className="button danger small" onClick={() => setRemoving(provider)}><Trash2 size={14} />删除提供方</button></footer>}
+            </div>}
+          </article>)}</div>
+        </section>}
+      </div>
+    </div>
+    {adding && <AddProviderDialog existing={draft.providers.map(provider => provider.id)} onClose={() => setAdding(false)} onAdd={provider => { setDraft({ ...draft, providers: [...draft.providers, provider] }); setExpanded(provider.id); setAdding(false) }} />}
+    {removing && <Dialog title="删除提供方" onClose={() => setRemoving(null)}><div className="confirm-content"><p>将删除“{removing.displayName}”的共享模型配置。已保存的 API Key 会保留，可在删除前单独清除。</p><footer><button className="button outline" onClick={() => setRemoving(null)}>取消</button><button className="button danger" onClick={() => { const providers = draft.providers.filter(provider => provider.id !== removing.id); const { defaultModel, ...rest } = draft; setDraft(defaultModel?.provider === removing.id ? { ...rest, providers } : { ...draft, providers }); setRemoving(null) }}>删除提供方</button></footer></div></Dialog>}
+    {clearingKey && <Dialog title="清除 API Key" onClose={() => setClearingKey(null)}><div className="confirm-content"><p>将从共享凭据文件中清除“{clearingKey.displayName}”使用的 API Key。引用同一 Key 的其他提供方也会受到影响。</p><footer><button className="button outline" onClick={() => setClearingKey(null)}>取消</button><button className="button danger" onClick={() => { setSaving(true); void window.manager.setUnifiedCredential({ ref: clearingKey.apiKeyRef, value: null }).then(next => { setConfiguration(next); setDraft(current => current ? { ...current, providers: current.providers.map(provider => provider.apiKeyRef === clearingKey.apiKeyRef ? { ...provider, hasApiKey: false } : provider) } : structuredClone(next)); setKeyDrafts(current => { const changed = { ...current }; for (const provider of next.providers) if (provider.apiKeyRef === clearingKey.apiKeyRef) delete changed[provider.id]; return changed }); setClearingKey(null) }).catch(error => onError(errorText(error))).finally(() => setSaving(false)) }}>清除 Key</button></footer></div></Dialog>}
+    {riskOpen && <Dialog title="启用完全访问" onClose={() => { setRiskOpen(false); setRiskAcknowledged(false) }}><div className="confirm-content"><p>以后创建的会话将可以访问工作区之外的文件，并且不会请求批准。</p><label className="check-row"><input type="checkbox" checked={riskAcknowledged} onChange={event => setRiskAcknowledged(event.target.checked)} />我了解这会扩大新会话的系统访问范围</label><footer><button className="button outline" onClick={() => { setRiskOpen(false); setRiskAcknowledged(false) }}>取消</button><button className="button danger" disabled={!riskAcknowledged} onClick={() => { setDraft({ ...draft, defaultPermission: 'danger-full-access' }); setRiskOpen(false); setRiskAcknowledged(false) }}>启用完全访问</button></footer></div></Dialog>}
+  </div>
+}
+
+function ConfigRow({ title, detail, children }: { title: string; detail: string; children: ReactNode }): ReactNode {
+  return <div className="configuration-row"><span><strong>{title}</strong><small>{detail}</small></span><div>{children}</div></div>
+}
+
+function AddProviderDialog({ existing, onClose, onAdd }: { existing: string[]; onClose: () => void; onAdd: (provider: UnifiedProviderProfile) => void }): ReactNode {
+  const [id, setId] = useState('')
+  const [displayName, setDisplayName] = useState('')
+  const [baseURL, setBaseURL] = useState('')
+  const [protocol, setProtocol] = useState<UnifiedProviderProfile['protocol']>('openai-completions')
+  const [error, setError] = useState<string | null>(null)
+  const submit = (event: FormEvent): void => {
+    event.preventDefault()
+    const route = id.trim()
+    if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(route) || existing.includes(route)) { setError(existing.includes(route) ? '提供方 ID 已存在。' : 'ID 只能使用小写字母、数字和连字符。'); return }
+    if (!displayName.trim() || !baseURL.trim()) { setError('显示名称和 Base URL 不能为空。'); return }
+    onAdd({ id: route, kind: 'custom', displayName: displayName.trim(), protocol, apiKeyRef: `${route.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`, hasApiKey: false, baseURL: baseURL.trim(), models: [{ id: '' }] })
+  }
+  return <Dialog title="添加自定义提供方" onClose={onClose}><form className="form" onSubmit={submit}>{error && <p className="inline-error">{error}</p>}<div className="provider-grid"><label className="field"><span>提供方 ID</span><input autoFocus value={id} placeholder="例如 sub2api" onChange={event => setId(event.target.value)} /></label><label className="field"><span>显示名称</span><input value={displayName} placeholder="例如 Sub2API" onChange={event => setDisplayName(event.target.value)} /></label></div><label className="field"><span>Base URL</span><input value={baseURL} placeholder="https://api.example.com/v1" onChange={event => setBaseURL(event.target.value)} /></label><label className="field"><span>API 协议</span><select value={protocol} onChange={event => setProtocol(event.target.value as UnifiedProviderProfile['protocol'])}><option value="openai-completions">OpenAI Completions</option><option value="openai-responses">OpenAI Responses</option><option value="anthropic-messages">Anthropic Messages</option></select></label><footer><button className="button outline" type="button" onClick={onClose}>取消</button><button className="button primary">继续配置模型</button></footer></form></Dialog>
 }
 
 function HomePage({ snapshot, busy, onModal, onOpen, onRun, onLog, onConfirm, onUseTemplate }: { snapshot: ManagerSnapshot; busy: string | null; onModal: (modal: Modal) => void; onOpen: (id: string) => void; onRun: Runner; onLog: (instance: InstanceRecord) => Promise<void>; onConfirm: (confirmation: Confirmation) => void; onUseTemplate: (id: string) => void }): ReactNode {

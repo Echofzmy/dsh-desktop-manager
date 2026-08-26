@@ -1,94 +1,140 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { parse } from 'yaml'
 import { ModelConfigurationService } from '../src/main/model-configuration-service.js'
 import { ModelSettingsProjection } from '../src/main/model-settings-projection.js'
-import { processGroupAlive } from '../src/main/instance-supervisor.js'
-import type { RuntimeRecord } from '../src/shared/types.js'
 
 const roots: string[] = []
 afterEach(async () => Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))))
 
+async function fixture() {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-native-configuration-'))
+  roots.push(root)
+  const projection = new ModelSettingsProjection(root)
+  await projection.initialize()
+  return { root, projection, service: new ModelConfigurationService(projection) }
+}
+
 describe('ModelConfigurationService', () => {
-  it('preserves its isolated DSH_HOME while removing inherited secret-bearing environment', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-model-configuration-env-'))
-    roots.push(root)
-    const runtimeRoot = join(root, 'runtime')
-    const entry = join(runtimeRoot, 'launcher.cjs')
-    await mkdir(runtimeRoot)
-    await writeFile(entry, `
-const http = require('node:http')
-const server = http.createServer((_request, response) => {
-  response.setHeader('content-type', 'application/json')
-  response.end(JSON.stringify({ home: process.env.DSH_HOME, leaked: process.env.DSH_MANAGER_MODEL_TEST_SECRET }))
-})
-server.listen(0, '127.0.0.1', () => console.log('dsh web: http://127.0.0.1:' + server.address().port))
-`)
-    const now = new Date().toISOString()
-    const runtime: RuntimeRecord = {
-      id: 'runtime-env', name: 'Runtime', source: 'local', path: runtimeRoot, registeredAt: now,
-      preflight: { checkedAt: now, ready: true, entryPath: entry, checks: [] },
-    }
-    const projection = new ModelSettingsProjection(root)
-    await projection.initialize()
-    const service = new ModelConfigurationService(root, projection)
-    process.env.DSH_MANAGER_MODEL_TEST_SECRET = 'must-not-inherit'
-    try {
-      const instance = await service.ensureRunning(runtime)
-      const response = await fetch(`http://127.0.0.1:${instance.port}/`)
-      await expect(response.json()).resolves.toEqual({ home: projection.home })
-    } finally {
-      delete process.env.DSH_MANAGER_MODEL_TEST_SECRET
-      await service.stop()
-    }
+  it('reads an immediate redacted configuration without starting DSH', async () => {
+    const { projection, service } = await fixture()
+    await writeFile(join(projection.home, '.credentials.yaml'), 'version: 1\nrefs:\n  DEEPSEEK_API_KEY: secret-never-returned\n', { mode: 0o600 })
+
+    const result = await service.read()
+
+    expect(result.providers[0]).toMatchObject({ id: 'deepseek-official', hasApiKey: true, protocol: 'deepseek' })
+    expect(result.providers[0]!.models.map(model => model.id)).toContain('deepseek-v4-flash')
+    expect(JSON.stringify(result)).not.toContain('secret-never-returned')
+    expect(result).toMatchObject({ defaultPermission: 'workspace-write', locale: 'system', theme: 'system', busyEnter: 'queue' })
   })
 
-  it('serializes concurrent view requests and stops its DSH process group', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-model-configuration-'))
-    roots.push(root)
-    const runtimeRoot = join(root, 'runtime')
-    const entry = join(runtimeRoot, 'launcher.cjs')
-    await mkdir(runtimeRoot)
-    await writeFile(entry, `
-const http = require('node:http')
-const server = http.createServer((_request, response) => response.end('ok'))
-server.listen(0, '127.0.0.1', () => console.log('dsh web: http://127.0.0.1:' + server.address().port))
-`)
-    const now = new Date().toISOString()
-    const runtime: RuntimeRecord = {
-      id: 'runtime', name: 'Runtime', source: 'local', path: runtimeRoot, registeredAt: now,
-      preflight: { checkedAt: now, ready: true, entryPath: entry, checks: [] },
+  it('writes DSH-compatible settings while preserving hidden advanced fields', async () => {
+    const { projection, service } = await fixture()
+    await writeFile(join(projection.home, 'settings.yaml'), 'llm-deepseek:\n  streamIdleTimeoutMs: 1234\nllm-pi-ai:\n  providers:\n    gateway:\n      timeoutMs: 4321\n      apiKeyEnv: GATEWAY_API_KEY\n      api: openai-completions\n      baseURL: https://old.example/v1\n      models:\n        - id: old-model\nworkspace-local:\n  retained: true\n')
+
+    const saved = await service.save({
+      providers: [
+        { id: 'deepseek-official', kind: 'deepseek', displayName: 'DeepSeek', protocol: 'deepseek', apiKeyRef: 'DEEPSEEK_API_KEY', baseURL: 'https://api.deepseek.example', models: [{ id: 'deepseek-v4-flash', contextWindow: 1000000 }] },
+        { id: 'gateway', kind: 'custom', displayName: 'Gateway', protocol: 'openai-responses', apiKeyRef: 'GATEWAY_API_KEY', baseURL: 'https://gateway.example/v1', timeoutMs: 900000, streamIdleTimeoutMs: 600000, models: [{ id: 'custom-chat', name: 'Custom Chat', contextWindow: 128000, maxTokens: 8192 }] },
+      ],
+      defaultModel: { provider: 'gateway', model: 'custom-chat' },
+      defaultReasoningEffort: 'high',
+      defaultPermission: 'read-only',
+      defaultAgentPreset: 'minimal',
+      locale: 'zh',
+      theme: 'dark',
+      busyEnter: 'queue',
+    })
+
+    expect(saved).toMatchObject({ defaultModel: { provider: 'gateway', model: 'custom-chat' }, defaultReasoningEffort: 'high', defaultPermission: 'read-only', theme: 'dark' })
+    const settings = parse(await readFile(join(projection.home, 'settings.yaml'), 'utf8'))
+    expect(settings).toMatchObject({
+      'llm-deepseek': { streamIdleTimeoutMs: 1234, baseURL: 'https://api.deepseek.example' },
+      'llm-pi-ai': { providers: { gateway: { timeoutMs: 900000, streamIdleTimeoutMs: 600000, api: 'openai-responses', models: [{ id: 'custom-chat' }] } } },
+      'agent-default-model': { provider: 'gateway', model: 'custom-chat', reasoningEffort: 'high' },
+      'workspace-local': { retained: true },
+      permission: { defaultPreset: 'read-only' },
+      locale: { preference: 'zh' },
+    })
+
+    const { defaultReasoningEffort: _reasoning, ...withoutReasoning } = saved
+    await service.save({
+      ...withoutReasoning,
+      providers: saved.providers.map(({ hasApiKey: _hasApiKey, ...provider }) => ({ ...provider, timeoutMs: null, streamIdleTimeoutMs: null })),
+    })
+    const reset = parse(await readFile(join(projection.home, 'settings.yaml'), 'utf8'))
+    expect(reset['llm-deepseek']).not.toHaveProperty('streamIdleTimeoutMs')
+    expect(reset['llm-pi-ai'].providers.gateway).not.toHaveProperty('timeoutMs')
+    expect(reset['llm-pi-ai'].providers.gateway).not.toHaveProperty('streamIdleTimeoutMs')
+    expect(reset['agent-default-model']).not.toHaveProperty('reasoningEffort')
+  })
+
+  it('preserves catalog inheritance and hidden model capability fields on a general save', async () => {
+    const { projection, service } = await fixture()
+    await writeFile(join(projection.home, 'settings.yaml'), `llm-pi-ai:\n  providers:\n    openai:\n      apiKeyEnv: OPENAI_API_KEY\n    gateway:\n      api: openai-responses\n      baseURL: https://gateway.example/v1\n      models:\n        - id: vision-chat\n          input: [text, image]\n          reasoningEfforts:\n            high: high\n          compat:\n            supportsStore: false\n`)
+    const configuration = await service.read()
+    expect(configuration.providers.find(provider => provider.id === 'openai')?.kind).toBe('catalog')
+
+    await service.save({
+      ...configuration,
+      providers: configuration.providers.map(({ hasApiKey: _hasApiKey, ...provider }) => provider),
+      theme: 'dark',
+    })
+
+    const settings = parse(await readFile(join(projection.home, 'settings.yaml'), 'utf8'))
+    expect(settings['llm-pi-ai'].providers.openai).toEqual({ apiKeyEnv: 'OPENAI_API_KEY', displayName: 'openai' })
+    expect(settings['llm-pi-ai'].providers.gateway.models[0]).toMatchObject({
+      id: 'vision-chat', input: ['text', 'image'], reasoningEfforts: { high: 'high' }, compat: { supportsStore: false },
+    })
+  })
+
+  it('stores and clears write-only API keys in an owner-only native credential document', async () => {
+    const { projection, service } = await fixture()
+    const configured = await service.setCredential({ ref: 'DEEPSEEK_API_KEY', value: '  ds-secret  ' })
+    expect(configured.providers[0]!.hasApiKey).toBe(true)
+    expect(JSON.stringify(configured)).not.toContain('ds-secret')
+    expect(parse(await readFile(projection.credentialsPath, 'utf8'))).toEqual({ version: 1, refs: { DEEPSEEK_API_KEY: 'ds-secret' } })
+    if (process.platform !== 'win32') expect((await stat(projection.credentialsPath)).mode & 0o077).toBe(0)
+
+    const cleared = await service.setCredential({ ref: 'DEEPSEEK_API_KEY', value: null })
+    expect(cleared.providers[0]!.hasApiKey).toBe(false)
+    expect(parse(await readFile(projection.credentialsPath, 'utf8'))).toEqual({ version: 1, refs: {} })
+  })
+
+  it('materializes a custom provider credential reference only after a key is configured', async () => {
+    const { projection, service } = await fixture()
+    const base = await service.read()
+    const input = {
+      ...base,
+      providers: [
+        ...base.providers.map(({ hasApiKey: _hasApiKey, ...provider }) => provider),
+        { id: 'native-auth', kind: 'custom' as const, displayName: 'Native Auth', protocol: 'openai-completions' as const, apiKeyRef: 'NATIVE_AUTH_API_KEY', baseURL: 'https://native.example/v1', models: [{ id: 'native-chat' }] },
+      ],
     }
-    const projection = new ModelSettingsProjection(root)
-    await projection.initialize()
-    const service = new ModelConfigurationService(root, projection)
+    await service.save(input)
+    let settings = parse(await readFile(join(projection.home, 'settings.yaml'), 'utf8'))
+    expect(settings['llm-pi-ai'].providers['native-auth']).not.toHaveProperty('apiKeyEnv')
 
-    const [first, second] = await Promise.all([service.ensureRunning(runtime), service.ensureRunning(runtime)])
-    expect(first.pid).toBe(second.pid)
-    expect(first.port).toBeGreaterThan(0)
-    expect(processGroupAlive(first.pid!)).toBe(true)
-    expect(service.usesRuntime(runtime.id)).toBe(true)
+    await service.setCredential({ ref: 'NATIVE_AUTH_API_KEY', value: 'native-secret' })
+    await service.save(input)
+    settings = parse(await readFile(join(projection.home, 'settings.yaml'), 'utf8'))
+    expect(settings['llm-pi-ai'].providers['native-auth'].apiKeyEnv).toBe('NATIVE_AUTH_API_KEY')
+  })
 
-    await service.stop()
-    expect(service.usesRuntime(runtime.id)).toBe(false)
-    expect(processGroupAlive(first.pid!)).toBe(false)
-
-    await writeFile(entry, `
-const http = require('node:http')
-const server = http.createServer((_request, response) => response.end('ok'))
-setTimeout(() => server.listen(0, '127.0.0.1', () => console.log('dsh web: http://127.0.0.1:' + server.address().port)), 250)
-`)
-    const reopening = service.ensureRunning(runtime)
-    await new Promise(resolve => setTimeout(resolve, 50))
-    const closing = service.stop()
-    const reopened = service.ensureRunning(runtime)
-    await expect(reopening).rejects.toThrow('统一配置页面已经关闭')
-    await closing
-    const next = await reopened
-    expect(processGroupAlive(next.pid!)).toBe(true)
-    expect(service.usesRuntime(runtime.id)).toBe(true)
-    await service.stop()
-    expect(service.usesRuntime(runtime.id)).toBe(false)
+  it('rejects unsafe credential references and incomplete custom providers', async () => {
+    const { service } = await fixture()
+    const base = await service.read()
+    await expect(service.save({ ...base, providers: base.providers.map(({ hasApiKey: _hasApiKey, ...provider }) => ({ ...provider, apiKeyRef: 'DSH_HOME' })) })).rejects.toThrow('API Key 引用无效')
+    await expect(service.save({
+      ...base,
+      providers: [
+        ...base.providers.map(({ hasApiKey: _hasApiKey, ...provider }) => provider),
+        { id: 'custom', kind: 'custom', displayName: 'Custom', protocol: 'openai-completions', apiKeyRef: 'CUSTOM_API_KEY', baseURL: 'https://custom.example/v1', models: [] },
+      ],
+    })).rejects.toThrow('至少需要一个模型')
+    await expect(service.save({ ...base, defaultModel: { provider: 'deepseek-official', model: 'missing-model' }, providers: base.providers.map(({ hasApiKey: _hasApiKey, ...provider }) => provider) })).rejects.toThrow('不在提供方的模型列表中')
+    await expect(service.setCredential({ ref: 'UNOWNED_API_KEY', value: 'secret' })).rejects.toThrow('不属于当前统一配置')
   })
 })

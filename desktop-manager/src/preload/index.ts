@@ -10,6 +10,8 @@ import type {
   ManagerApi,
   ManagerSnapshot,
   RegisterRuntimeInput,
+  SaveUnifiedConfigurationInput,
+  SetUnifiedCredentialInput,
   UpdateSettingsInput,
 } from '../shared/types.js'
 
@@ -48,8 +50,9 @@ const api: ManagerApi = {
   chooseDirectory: () => ipcRenderer.invoke(IPC.directoryChoose),
   openExternal: (instanceId: string) => ipcRenderer.invoke(IPC.externalOpen, instanceId),
   showInstanceView: (instanceId: string, bounds: EmbeddedViewBounds) => ipcRenderer.invoke(IPC.viewShow, instanceId, bounds),
-  showModelConfiguration: (bounds: EmbeddedViewBounds, openSettings: boolean) => ipcRenderer.invoke(IPC.modelViewShow, bounds, openSettings),
-  closeModelConfiguration: () => ipcRenderer.invoke(IPC.modelViewClose),
+  getUnifiedConfiguration: () => ipcRenderer.invoke(IPC.unifiedConfigurationGet),
+  saveUnifiedConfiguration: (input: SaveUnifiedConfigurationInput) => ipcRenderer.invoke(IPC.unifiedConfigurationSave, input),
+  setUnifiedCredential: (input: SetUnifiedCredentialInput) => ipcRenderer.invoke(IPC.unifiedCredentialSet, input),
   hideInstanceView: () => ipcRenderer.invoke(IPC.viewHide),
   onSnapshotChanged: (listener: (snapshot: ManagerSnapshot) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, snapshot: ManagerSnapshot): void => listener(snapshot)

@@ -14,7 +14,7 @@ const SHARED_NAMESPACES = [
   'ui-conversation',
 ] as const
 
-async function readOptional(path: string): Promise<string | undefined> {
+export async function readOptional(path: string): Promise<string | undefined> {
   try {
     return await readFile(path, 'utf8')
   } catch (error) {
@@ -35,9 +35,27 @@ async function lockContention(error: unknown, lockPath: string): Promise<boolean
   }
 }
 
-async function withSettingsLock<T>(filename: string, operation: () => Promise<T>): Promise<T> {
+async function removeStaleManagerLock(lockPath: string): Promise<boolean> {
+  let owner: string
+  try { owner = (await readFile(lockPath, 'utf8')).trim() } catch { return false }
+  if (!/^\d+$/.test(owner)) return false
+  try {
+    process.kill(Number(owner), 0)
+    return false
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') return false
+  }
+  try {
+    await rm(lockPath)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT'
+  }
+}
+
+export async function withSettingsLock<T>(filename: string, operation: () => Promise<T>, waitMs = 2_000): Promise<T> {
   const lockPath = `${filename}.lock`
-  const deadline = Date.now() + 2_000
+  const deadline = Date.now() + waitMs
   let delay = 20
   for (;;) {
     try {
@@ -45,6 +63,7 @@ async function withSettingsLock<T>(filename: string, operation: () => Promise<T>
       break
     } catch (error) {
       if (!await lockContention(error, lockPath)) throw error
+      if (await removeStaleManagerLock(lockPath)) continue
     }
     if (Date.now() >= deadline) throw new Error(`模型设置写入锁等待超时：${lockPath}`)
     await new Promise(resolve => setTimeout(resolve, delay))
@@ -57,7 +76,7 @@ async function withSettingsLock<T>(filename: string, operation: () => Promise<T>
   }
 }
 
-async function atomicWrite(path: string, content: string): Promise<void> {
+export async function atomicWrite(path: string, content: string): Promise<void> {
   const directory = dirname(path)
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`
   await mkdir(directory, { recursive: true, mode: 0o700 })
@@ -77,7 +96,7 @@ async function atomicWrite(path: string, content: string): Promise<void> {
   }
 }
 
-function parseSettings(contents: string, label: string) {
+export function parseSettings(contents: string, label: string) {
   const document = parseDocument(contents)
   if (document.errors.length) throw new Error(`${label} 无法解析：${document.errors[0]!.message}`)
   const value = document.toJS()

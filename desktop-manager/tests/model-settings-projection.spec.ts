@@ -3,12 +3,24 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
-import { ModelSettingsProjection } from '../src/main/model-settings-projection.js'
+import { ModelSettingsProjection, withSettingsLock } from '../src/main/model-settings-projection.js'
 
 const roots: string[] = []
 afterEach(async () => Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))))
 
 describe('ModelSettingsProjection', () => {
+  it('recovers a manager lock left by a dead writer process', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-model-settings-'))
+    roots.push(root)
+    const filename = join(root, 'settings.yaml')
+    await writeFile(`${filename}.lock`, '2147483647\n', { mode: 0o600 })
+
+    const result = await withSettingsLock(filename, async () => 'written')
+
+    expect(result).toBe('written')
+    await expect(readFile(`${filename}.lock`, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('projects reviewed shared settings and points DSH at one shared native credential file', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-model-settings-'))
     roots.push(root)

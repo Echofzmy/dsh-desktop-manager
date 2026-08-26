@@ -1,6 +1,6 @@
 # DSH 管理器
 
-用于在同一台电脑上管理多个 DeepSeek Harness 运行版本、实例、DSH_HOME 和共享启动配置的 Electron 桌面应用。界面使用中文 DSH 工作台结构；实例可以并行运行，并保持运行时、环境和端口相互独立。新实例使用管理器内部启动目录和自动端口，真正的项目工作区在 DSH 新建会话时选择。模型、API Key、默认权限和常用偏好在管理器的“统一配置”页面通过 DSH 原生设置界面配置一次。
+用于在同一台电脑上管理多个 DeepSeek Harness 运行版本、实例、DSH_HOME 和共享启动配置的 Electron 桌面应用。界面使用中文 DSH 工作台结构；实例可以并行运行，并保持运行时、环境和端口相互独立。新实例使用管理器内部启动目录和自动端口，真正的项目工作区在 DSH 新建会话时选择。模型、API Key、默认权限和常用偏好在管理器自己的“统一配置”页面配置一次，无需启动 DSH。
 
 ## 开发
 
@@ -20,7 +20,7 @@ pnpm build
 pnpm test:electron
 ```
 
-`pnpm test:electron` 使用带随机 UUID sentinel 的临时 Application Support；只有规范化路径是系统临时目录下的单层 `dsh-manager-electron-*` 目录时，测试才会在 Electron 启动前创建一次性 settings 与 credential fixture。启动后只调用 DSH 的只读 `settings.describe`、`credentials.describe` 和 `llm.models` 等 API，不调用 `credentials.set/unset` 或 settings mutation API；在任何 onboarding 点击前必须先从 `settings.describe` 核对本次 UUID fixture 的 custom provider，否则立即退出。测试验证内置官方运行时、本地源码运行时、原生 General/Models 页面、自定义 OpenAI-compatible provider、共享 Key 的目标解析、DeepSeek 有效默认、目标模型目录、API Key onboarding 抑制、聊天界面不可访问、Settings 的 Escape/关闭/遮罩锁定、owner-only credential overlay、自动端口重选、运行中环境克隆、嵌入式 Web GUI、菜单切换停止内部 Host、单实例锁、原生视图弹窗隔离和两种窗口尺寸。截图写入已忽略的 `.artifacts/`，不会停止、接管或修改现有 `127.0.0.1:3080` 服务及其凭据。
+`pnpm test:electron` 使用带随机 UUID sentinel 的临时 Application Support；只有规范化路径是系统临时目录下的单层 `dsh-manager-electron-*` 目录时，测试才会创建一次性 settings 与 credential fixture。测试通过管理器原生表单修改 provider、模型、权限、Agent preset、Enter 行为和临时 API Key，确认页面不启动额外 DSH 进程或 WebContents、IPC 不回传凭据明文，再启动业务实例验证共享 provider、Key、默认值和偏好投影。其余覆盖包括内置与本地运行时、owner-only credential overlay、自动端口重选、运行中环境克隆、嵌入式 Web GUI、单实例锁、原生视图弹窗隔离和两种窗口尺寸。截图写入已忽略的 `.artifacts/`，不会停止、接管或修改现有 `127.0.0.1:3080` 服务及其凭据。
 
 ## 发布
 
@@ -40,7 +40,7 @@ pnpm package
 - 注册本地 DSH 源码，显示 Git commit 与工作树状态；可执行受限的依赖安装、类型检查、测试和构建任务，持久化任务日志，失败或中断时保持启动门禁。
 - 从任意本地 Git runtime 创建管理器受管 worktree，自动注册并要求完成安装和构建；不预设任何候选版本目录名称。
 - 设置默认运行时；创建独立、生产和克隆 DSH_HOME。运行中的克隆来源会先停止，复制完成后立即恢复。
-- 在侧栏“统一配置”中使用经过完整性验证的官方运行时启动管理器专属 DSH Web Host，复用 DSH 原生 General 与 Models 设置逻辑，不在管理器中维护另一套表单。Host 只显示并允许操作原生设置对话框；底层工作区、会话和聊天界面被隐藏并禁用，外层 Settings 不能通过 Escape、关闭按钮或遮罩退出。共享配置投影 `llm-deepseek`、`llm-pi-ai`、`agent-default-model`、`permission`、`agent-presets`、`locale`、`ui-theme` 和 `ui-conversation`；默认模型、权限与 Agent preset 只作用于以后创建的会话。共享源没有显式默认模型时清除实例旧默认并回到 DSH 内置 DeepSeek 默认。onboarding、工作区、会话记录、会话已选模型/权限/preset、日志与缓存继续隔离；运行中的实例在重启后应用统一配置变更。
+- 侧栏“统一配置”由管理器即时渲染，不启动 DSH。页面按通用与模型分区维护 DeepSeek、自定义 OpenAI/Anthropic-compatible provider、write-only API Key、Base URL、请求/流空闲超时、模型目录、默认模型与思考深度、默认权限、Agent preset、语言、主题和忙碌时 Enter 行为。共享配置投影 `llm-deepseek`、`llm-pi-ai`、`agent-default-model`、`permission`、`agent-presets`、`locale`、`ui-theme` 和 `ui-conversation`；默认模型、权限与 Agent preset 只作用于以后创建的会话。onboarding、工作区、会话记录、会话已选模型/权限/preset、日志与缓存继续隔离；运行中的实例在重启后应用统一配置变更。
 - 创建、启动、停止、强制停止、重启和删除实例。新建实例只选择名称、运行时和环境；管理器为进程创建独立的内部启动目录，项目工作区由用户在 DSH 新建会话时选择。删除隔离环境需要明确选择；生产 DSH_HOME 永不由管理器删除。
 - 每次启动均通过 DSH `--port 0` 自动分配端口。管理器解析 readiness URL、执行 HTTP 确认、持久化日志，并在隔离的 `WebContentsView` 中打开 GUI。
 - 停止以整个 detached 进程组消失为完成条件。管理器异常退出后的活动实例、任务和长操作进入恢复隔离，不会直接复用旧 PID 或端口。
@@ -56,7 +56,7 @@ pnpm package
 
 官方安装器固定 `https://registry.npmjs.org`，renderer 不能提交 registry、tarball、可执行文件或目标路径。安装使用临时 HOME、独立 cache 和空 userconfig，不继承 API key、token、凭据或 Node 注入环境，并使用 `--ignore-scripts` 禁止未验证 npm lifecycle 代码；完整 lockfile 闭包必须来自固定 registry 且具备 sha512 integrity。完成包身份、CLI、真实 Web readiness/HTTP 探针和文件清单后才写 READY 并发布目录。应用在发现、复用和每次启动官方 runtime 前都会重新核对 receipt、READY、清单摘要与实际文件。
 
-共享 API Key 由统一配置 Host 通过 DSH 原生 `credentials.set` 写入 `<应用数据目录>/model-configuration/home/.credentials.yaml`；目录为 owner-only，文件由 DSH 以 `0600`、跨进程锁和原子替换维护。管理器 state、renderer snapshot、IPC 响应和日志均不保存或返回 Key。实例通过管理器生成的固定 `--patch` overlay 让自己的 `credentials-local` provider 引用该文件，并从同一次 provider settings 投影快照提取、删除实际 `apiKeyEnv` 继承变量；无关的工具 Token 保持可用。模型定义、未来会话默认值和常用 UI 偏好在实例停止状态下使用 DSH 兼容 writer lock 结构化合并进各自 `settings.yaml`，实例隔离 namespace 保持不变。
+共享 API Key 由管理器主进程写入 `<应用数据目录>/model-configuration/home/.credentials.yaml`；目录为 owner-only，文件采用 DSH 兼容的 `0600`、跨进程锁和原子替换协议。renderer 只接收 `hasApiKey`，管理器 state、读取 IPC、日志和界面均不保存或返回 Key；设置操作只允许提交当前输入的新值或显式清除。实例通过管理器生成的固定 `--patch` overlay 让自己的 `credentials-local` provider 引用该文件，并从同一次 provider settings 投影快照提取、删除实际 `apiKeyEnv` 继承变量；无关工具 Token 保持可用。模型定义、未来会话默认值和常用 UI 偏好在实例停止状态下使用 DSH 兼容 writer lock 结构化合并进各自 `settings.yaml`，实例隔离 namespace 保持不变。
 
 所有由同一用户启动的受管 DSH runtime 属于同一本机信任域：业务实例可通过 DSH 原生 credential API 更新共享 Key，同一 UID 下的恶意 runtime 也能主动读取用户文件。`WebContentsView` partition、窄 IPC 和脱敏 API 防止页面意外越权或明文回传，但不是针对恶意本机 runtime 的密钥隔离；只应注册和启动可信代码。
 
