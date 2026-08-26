@@ -126,7 +126,7 @@ describe('ModelConfigurationService', () => {
     })
 
     const settings = parse(await readFile(join(projection.home, 'settings.yaml'), 'utf8'))
-    expect(settings['llm-pi-ai'].providers.openai).toEqual({ apiKeyEnv: 'OPENAI_API_KEY', displayName: 'openai' })
+    expect(settings['llm-pi-ai'].providers.openai).toEqual({ apiKeyEnv: 'OPENAI_API_KEY' })
     expect(settings['llm-pi-ai'].providers.gateway.models[0]).toMatchObject({
       id: 'vision-chat', input: ['text', 'image'], reasoningEfforts: { high: 'high' }, compat: { supportsStore: false },
     })
@@ -152,11 +152,13 @@ describe('ModelConfigurationService', () => {
       ...base,
       providers: [
         ...base.providers.map(({ hasApiKey: _hasApiKey, ...provider }) => provider),
-        { id: 'native-auth', kind: 'custom' as const, displayName: 'Native Auth', protocol: 'openai-completions' as const, apiKeyRef: 'NATIVE_AUTH_API_KEY', baseURL: 'https://native.example/v1', models: [{ id: 'native-chat' }] },
+        { id: 'native-auth', kind: 'custom' as const, displayName: '', protocol: 'openai-completions' as const, apiKeyRef: 'NATIVE_AUTH_API_KEY', baseURL: 'https://native.example/v1', models: [{ id: 'native-chat' }] },
       ],
     }
-    await service.save(input)
+    const saved = await service.save(input)
+    expect(saved.providers.find(provider => provider.id === 'native-auth')?.displayName).toBe('native-auth')
     let settings = parse(await readFile(join(projection.home, 'settings.yaml'), 'utf8'))
+    expect(settings['llm-pi-ai'].providers['native-auth']).not.toHaveProperty('displayName')
     expect(settings['llm-pi-ai'].providers['native-auth']).not.toHaveProperty('apiKeyEnv')
 
     await service.setCredential({ ref: 'NATIVE_AUTH_API_KEY', value: 'native-secret' })

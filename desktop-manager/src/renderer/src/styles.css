@@ -237,6 +237,8 @@ button { color: inherit; }
 .configuration-nav button.active { background: var(--bg-active); color: var(--deepseek-blue); font-weight: 500; }
 .configuration-content { min-width: 0; overflow: auto; padding: 24px 30px 48px; }
 .configuration-section { width: min(820px, 100%); margin: 0 auto; }
+.configuration-save-bar { display: flex; width: min(820px, 100%); align-items: center; justify-content: space-between; gap: 16px; margin: 28px auto 0; padding-top: 18px; border-top: 1px solid var(--border-l1); color: var(--text-tertiary); font-size: 12px; }
+.configuration-save-bar .button { flex: 0 0 auto; }
 .configuration-section > h2, .configuration-section-heading h2 { margin: 0 0 16px; font-size: 17px; line-height: 25px; font-weight: 600; }
 .configuration-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(200px, 320px); align-items: center; gap: 24px; min-height: 70px; padding: 12px 2px; border-bottom: 1px solid var(--border-l1); }
 .configuration-row > span { display: grid; gap: 2px; }

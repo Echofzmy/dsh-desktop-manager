@@ -177,8 +177,8 @@ function validateInput(input: SaveUnifiedConfigurationInput): SaveUnifiedConfigu
     if ((provider.kind === 'deepseek' && id !== DEEPSEEK_PROVIDER) || (provider.kind === 'custom' && !ROUTE_PATTERN.test(id))) throw new Error(`提供方 ID 无效：${id}`)
     if (ids.has(id)) throw new Error(`提供方 ID 重复：${id}`)
     ids.add(id)
-    const displayName = provider.displayName.trim()
-    if (!displayName || displayName.length > 100) throw new Error(`提供方名称无效：${id}`)
+    const displayName = provider.displayName.trim() || id
+    if (displayName.length > 100) throw new Error(`提供方名称无效：${id}`)
     const apiKeyRef = provider.apiKeyRef.trim()
     assertCredentialRef(apiKeyRef)
     if (provider.kind === 'deepseek' && provider.protocol !== 'deepseek') throw new Error('DeepSeek 提供方协议无效。')
@@ -357,10 +357,9 @@ export class ModelConfigurationService {
       for (const provider of input.providers.filter(item => item.kind !== 'deepseek')) {
         const previous = recordOf(previousPi[provider.id])
         const existingRef = optionalString(previous.apiKeyEnv)
-        const profile: Record<string, unknown> = {
-          ...previous,
-          displayName: provider.displayName,
-        }
+        const profile: Record<string, unknown> = { ...previous }
+        if (provider.displayName === provider.id && optionalString(previous.displayName) === undefined) delete profile.displayName
+        else profile.displayName = provider.displayName
         if (provider.kind === 'custom') {
           profile.api = provider.protocol
           profile.baseURL = provider.baseURL

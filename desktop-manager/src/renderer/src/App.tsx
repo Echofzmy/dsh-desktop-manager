@@ -152,6 +152,25 @@ function timeoutMilliseconds(value: string): number | undefined {
   return Math.round(Number(value) * 60_000)
 }
 
+function configurationDraftError(value: UnifiedConfiguration): string | undefined {
+  const ids = new Set<string>()
+  for (const provider of value.providers) {
+    if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(provider.id)) return '提供方 ID 只能使用小写字母、数字和连字符。'
+    if (ids.has(provider.id)) return `提供方 ID 已存在：${provider.id}`
+    ids.add(provider.id)
+    if (provider.displayName.trim().length > 100) return `提供方 ${provider.id} 的显示名称过长。`
+    if (provider.kind !== 'catalog' && !provider.baseURL?.trim()) return `提供方 ${provider.displayName.trim() || provider.id} 需要 Base URL。`
+    if (provider.kind === 'custom' && provider.models.length === 0) return `提供方 ${provider.displayName.trim() || provider.id} 至少需要一个模型。`
+    const modelIds = new Set<string>()
+    for (const model of provider.models) {
+      if (!model.id.trim()) return `提供方 ${provider.displayName.trim() || provider.id} 存在空模型 ID。`
+      if (modelIds.has(model.id.trim())) return `模型 ID 重复：${model.id.trim()}`
+      modelIds.add(model.id.trim())
+    }
+  }
+  return undefined
+}
+
 function configurationInput(value: UnifiedConfiguration): SaveUnifiedConfigurationInput {
   return {
     ...value,
@@ -166,7 +185,7 @@ function ModelsPage({ runningCount, onDirtyChange, onError }: { runningCount: nu
   const [expanded, setExpanded] = useState<string | null>(null)
   const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({})
   const [clearingKey, setClearingKey] = useState<UnifiedProviderProfile | null>(null)
-  const [adding, setAdding] = useState(false)
+  const [creatingProviderId, setCreatingProviderId] = useState<string | null>(null)
   const [removing, setRemoving] = useState<UnifiedProviderProfile | null>(null)
   const [riskOpen, setRiskOpen] = useState(false)
   const [riskAcknowledged, setRiskAcknowledged] = useState(false)
@@ -180,6 +199,7 @@ function ModelsPage({ runningCount, onDirtyChange, onError }: { runningCount: nu
       setConfiguration(next)
       setDraft(structuredClone(next))
       setKeyDrafts({})
+      setCreatingProviderId(null)
     } catch (error) { onError(errorText(error)) }
   }
   useEffect(() => { void load() }, [])
@@ -228,6 +248,29 @@ function ModelsPage({ runningCount, onDirtyChange, onError }: { runningCount: nu
       }
       return { ...current, providers }
     })
+  }
+  const addProvider = (): void => {
+    if (creatingProviderId !== null) { setExpanded(creatingProviderId); return }
+    const ids = new Set(draft?.providers.map(provider => provider.id) ?? [])
+    let id = 'new-provider'
+    for (let suffix = 2; ids.has(id); suffix += 1) id = `new-provider-${suffix}`
+    const provider: UnifiedProviderProfile = { id, kind: 'custom', displayName: '', protocol: 'openai-completions', apiKeyRef: `${id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`, hasApiKey: false, baseURL: '', models: [] }
+    setDraft(current => current ? { ...current, providers: [...current.providers, provider] } : current)
+    setCreatingProviderId(id)
+    setExpanded(id)
+  }
+  const renameCreatingProvider = (previousId: string, id: string): void => {
+    if (draft?.providers.some(provider => provider.id !== previousId && provider.id === id)) { onError(`提供方 ID 已存在：${id}`); return }
+    setDraft(current => current ? { ...current, providers: current.providers.map(provider => provider.id === previousId ? { ...provider, id, apiKeyRef: `${id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY` } : provider) } : current)
+    setKeyDrafts(current => { const next = { ...current }; if (previousId in next) { next[id] = next[previousId]!; delete next[previousId] } return next })
+    setCreatingProviderId(id)
+    setExpanded(id)
+  }
+  const cancelCreatingProvider = (id: string): void => {
+    setDraft(current => current ? { ...current, providers: current.providers.filter(provider => provider.id !== id) } : current)
+    setKeyDrafts(current => { const next = { ...current }; delete next[id]; return next })
+    setCreatingProviderId(null)
+    setExpanded(null)
   }
   const discoverModels = async (provider: UnifiedProviderProfile): Promise<void> => {
     if (discovering) return
@@ -281,6 +324,8 @@ function ModelsPage({ runningCount, onDirtyChange, onError }: { runningCount: nu
   }
   const save = async (): Promise<void> => {
     if (!draft || saving) return
+    const validation = configurationDraftError(draft)
+    if (validation) { onError(validation); return }
     setSaving(true)
     try {
       let next = await window.manager.saveUnifiedConfiguration(configurationInput(draft))
@@ -296,6 +341,7 @@ function ModelsPage({ runningCount, onDirtyChange, onError }: { runningCount: nu
       setConfiguration(next)
       setDraft(structuredClone(next))
       setKeyDrafts({})
+      setCreatingProviderId(null)
     } catch (error) {
       onError(`${errorText(error)} 配置已重新加载，请确认后重试。`)
       await load()
@@ -305,11 +351,11 @@ function ModelsPage({ runningCount, onDirtyChange, onError }: { runningCount: nu
   useEffect(() => { onDirtyChange(dirty); return () => onDirtyChange(false) }, [dirty, onDirtyChange])
 
   if (!draft) return <div className="configuration-loading"><RefreshCw size={22} className="spin" /><span>正在读取统一配置…</span></div>
-  const modelOptions = draft.providers.flatMap(provider => provider.models.map(model => ({ value: `${provider.id}\u0000${model.id}`, label: `${provider.displayName} / ${model.name || model.id}` })))
+  const modelOptions = draft.providers.flatMap(provider => provider.models.map(model => ({ value: `${provider.id}\u0000${model.id}`, label: `${provider.displayName.trim() || provider.id} / ${model.name || model.id}` })))
   const defaultModelValue = draft.defaultModel ? `${draft.defaultModel.provider}\u0000${draft.defaultModel.model}` : ''
 
   return <div className="configuration-page">
-    <header className="configuration-header"><div><h1>统一配置</h1><p>{runningCount ? `${runningCount} 个运行中实例将在重启后应用更改` : '新实例和以后创建的会话会复用这里的设置'}</p></div><button className="button primary" disabled={!dirty || saving} onClick={() => void save()}><Save size={16} />{saving ? '正在保存…' : '保存更改'}</button></header>
+    <header className="configuration-header"><div><h1>统一配置</h1><p>{runningCount ? `${runningCount} 个运行中实例将在重启后应用更改` : '新实例和以后创建的会话会复用这里的设置'}</p></div></header>
     <div className="configuration-shell">
       <nav className="configuration-nav" aria-label="统一配置分类"><button className={section === 'general' ? 'active' : ''} onClick={() => setSection('general')}>通用</button><button className={section === 'models' ? 'active' : ''} onClick={() => setSection('models')}>模型</button></nav>
       <div className="configuration-content">
@@ -321,24 +367,25 @@ function ModelsPage({ runningCount, onDirtyChange, onError }: { runningCount: nu
           <ConfigRow title="忙碌时按 Enter" detail="选择追加排队或立即引导当前回复"><select aria-label="忙碌时按 Enter" value={draft.busyEnter} onChange={event => setDraft({ ...draft, busyEnter: event.target.value as UnifiedConfiguration['busyEnter'] })}><option value="steer">立即引导</option><option value="queue">加入队列</option></select></ConfigRow>
           <ConfigRow title="默认模型" detail="新会话默认选择的模型"><select aria-label="默认模型" value={defaultModelValue} onChange={event => { const [provider, model] = event.target.value.split('\u0000'); const { defaultModel: _previous, ...rest } = draft; setDraft(provider && model ? { ...rest, defaultModel: { provider, model } } : rest) }}><option value="">使用 DSH 默认值</option>{modelOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></ConfigRow>
           <ConfigRow title="默认思考深度" detail="新会话使用；模型不支持时由提供方处理"><select aria-label="默认思考深度" value={draft.defaultReasoningEffort ?? ''} onChange={event => { const { defaultReasoningEffort: _previous, ...rest } = draft; setDraft(event.target.value ? { ...rest, defaultReasoningEffort: event.target.value as NonNullable<UnifiedConfiguration['defaultReasoningEffort']> } : rest) }}><option value="">使用模型默认值</option><option value="off">关闭</option><option value="minimal">Minimal</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option></select></ConfigRow>
-        </section> : <section className="configuration-section models-section"><div className="configuration-section-heading"><div><h2>模型</h2><p>API Key 仅写入共享凭据文件，不会回显</p></div><button className="button outline small" onClick={() => setAdding(true)}><Plus size={15} />添加自定义提供方</button></div>
+        </section> : <section className="configuration-section models-section"><div className="configuration-section-heading"><div><h2>模型</h2><p>API Key 仅写入共享凭据文件，不会回显</p></div><button className="button outline small" disabled={creatingProviderId !== null} onClick={addProvider}><Plus size={15} />添加自定义提供方</button></div>
           <div className="provider-list">{draft.providers.map(provider => <article className={`provider-profile${expanded === provider.id ? ' expanded' : ''}`} key={provider.id}>
-            <button className="provider-summary" aria-expanded={expanded === provider.id} onClick={() => setExpanded(current => current === provider.id ? null : provider.id)}><span className={`credential-dot ${provider.hasApiKey || keyDrafts[provider.id]?.trim() ? 'configured' : ''}`} /><span className="grow"><strong>{provider.displayName}</strong><small>{provider.id} · {provider.protocol === 'deepseek' ? 'DeepSeek API' : provider.protocol}</small></span><span className="provider-key-state">{provider.hasApiKey ? 'API Key 已配置' : 'API Key 未配置'}</span>{expanded === provider.id ? <ChevronDown size={17} /> : <ChevronRight size={17} />}</button>
+            <button className="provider-summary" aria-expanded={expanded === provider.id} onClick={() => setExpanded(current => current === provider.id ? null : provider.id)}><span className={`credential-dot ${provider.hasApiKey || keyDrafts[provider.id]?.trim() ? 'configured' : ''}`} /><span className="grow"><strong>{provider.displayName.trim() || provider.id || '新的提供方'}</strong><small>{provider.id || '尚未填写 ID'} · {provider.protocol === 'deepseek' ? 'DeepSeek API' : provider.protocol}</small></span><span className="provider-key-state">{provider.hasApiKey ? 'API Key 已配置' : 'API Key 未配置'}</span>{expanded === provider.id ? <ChevronDown size={17} /> : <ChevronRight size={17} />}</button>
             {expanded === provider.id && <div className="provider-editor">
+              {creatingProviderId === provider.id && <label className="field"><span>提供方 ID</span><input autoFocus value={provider.id} onFocus={event => event.currentTarget.select()} onChange={event => renameCreatingProvider(provider.id, event.target.value)} /></label>}
               <div className="credential-field-row"><label className="field"><span>API Key</span><span className="key-field"><KeyRound size={16} /><input type="password" autoComplete="new-password" value={keyDrafts[provider.id] ?? ''} placeholder={provider.hasApiKey ? '已配置；留空保持不变' : '输入 API Key'} onChange={event => setKeyDrafts(current => ({ ...current, [provider.id]: event.target.value }))} /></span></label>{provider.hasApiKey && <button className="button outline small" onClick={() => setClearingKey(provider)}>清除 Key</button>}</div>
-              {provider.kind === 'custom' && <div className="provider-grid"><label className="field"><span>显示名称</span><input value={provider.displayName} onChange={event => patchProvider(provider.id, current => ({ ...current, displayName: event.target.value }))} /></label><label className="field"><span>API 协议</span><select value={provider.protocol} onChange={event => patchProvider(provider.id, current => ({ ...current, protocol: event.target.value as UnifiedProviderProfile['protocol'] }))}><option value="openai-completions">OpenAI Completions</option><option value="openai-responses">OpenAI Responses</option><option value="anthropic-messages">Anthropic Messages</option></select></label></div>}
+              {provider.kind === 'custom' && <div className="provider-grid"><label className="field"><span>显示名称（可选）</span><input value={provider.displayName} placeholder="留空时使用提供方 ID" onChange={event => patchProvider(provider.id, current => ({ ...current, displayName: event.target.value }))} /></label><label className="field"><span>API 协议</span><select value={provider.protocol} onChange={event => patchProvider(provider.id, current => ({ ...current, protocol: event.target.value as UnifiedProviderProfile['protocol'] }))}><option value="openai-completions">OpenAI Completions</option><option value="openai-responses">OpenAI Responses</option><option value="anthropic-messages">Anthropic Messages</option></select></label></div>}
               <label className="field"><span>Base URL</span><input value={provider.baseURL ?? ''} placeholder={provider.kind === 'deepseek' ? 'https://api.deepseek.com' : 'https://api.example.com/v1'} onChange={event => patchProvider(provider.id, current => ({ ...current, baseURL: event.target.value }))} /></label>
               <div className="provider-grid"><label className="field"><span>请求超时（分钟）</span><input type="number" min="0.1" step="0.1" value={timeoutMinutes(provider.timeoutMs)} placeholder="使用提供方默认值" onChange={event => patchProvider(provider.id, current => { const next = { ...current }; const value = timeoutMilliseconds(event.target.value); if (value === undefined) next.timeoutMs = null; else next.timeoutMs = value; return next })} /></label><label className="field"><span>流空闲超时（分钟）</span><input type="number" min="0.1" step="0.1" value={timeoutMinutes(provider.streamIdleTimeoutMs)} placeholder="DSH 默认 5 分钟" onChange={event => patchProvider(provider.id, current => { const next = { ...current }; const value = timeoutMilliseconds(event.target.value); if (value === undefined) next.streamIdleTimeoutMs = null; else next.streamIdleTimeoutMs = value; return next })} /></label></div>
               <div className="model-editor"><div className="model-editor-heading"><span>模型</span><span className="model-editor-actions"><button className="button outline small" disabled={!['deepseek', 'openai-completions', 'openai-responses'].includes(provider.protocol) || discovering !== null || !provider.baseURL?.trim()} title={!['deepseek', 'openai-completions', 'openai-responses'].includes(provider.protocol) ? '当前协议没有可读取的模型列表接口' : !provider.baseURL?.trim() ? '请先填写 Base URL' : undefined} onClick={() => void discoverModels(provider)}><RefreshCw size={14} className={discovering === provider.id ? 'spin' : ''} />{discovering === provider.id ? '正在发现…' : '发现可用模型'}</button><button className="button outline small" onClick={() => patchProvider(provider.id, current => ({ ...current, models: [...current.models, { id: '' }] }))}><Plus size={14} />添加模型</button></span></div>{provider.models.map((model, index) => <div className="model-row" key={`${provider.id}:${index}`}><input aria-label={`模型 ID ${index + 1}`} placeholder="模型 ID" value={model.id} onChange={event => patchModel(provider.id, index, { id: event.target.value })} /><input aria-label={`模型名称 ${index + 1}`} placeholder="显示名称（可选）" value={model.name ?? ''} onChange={event => patchModel(provider.id, index, { name: event.target.value || undefined })} /><input aria-label={`上下文窗口 ${index + 1}`} inputMode="numeric" placeholder="上下文窗口" value={model.contextWindow ?? ''} onChange={event => patchModel(provider.id, index, { contextWindow: event.target.value ? Number(event.target.value) : undefined })} /><input aria-label={`最大输出 ${index + 1}`} inputMode="numeric" placeholder="最大输出" value={model.maxTokens ?? ''} onChange={event => patchModel(provider.id, index, { maxTokens: event.target.value ? Number(event.target.value) : undefined })} /><IconButton danger label="删除模型" onClick={() => deleteModel(provider.id, index)}><Trash2 size={15} /></IconButton></div>)}</div>
-              {provider.kind !== 'deepseek' && <footer className="provider-footer"><button className="button danger small" onClick={() => setRemoving(provider)}><Trash2 size={14} />删除提供方</button></footer>}
+              {provider.kind !== 'deepseek' && <footer className="provider-footer">{creatingProviderId === provider.id ? <button className="button outline small" onClick={() => cancelCreatingProvider(provider.id)}>取消新增</button> : <button className="button danger small" onClick={() => setRemoving(provider)}><Trash2 size={14} />删除提供方</button>}</footer>}
             </div>}
           </article>)}</div>
         </section>}
+        <footer className="configuration-save-bar"><span>{dirty ? '有未保存的配置更改' : '配置已保存'}</span><button className="button primary" disabled={!dirty || saving} onClick={() => void save()}><Save size={16} />{saving ? '正在保存…' : '保存配置'}</button></footer>
       </div>
     </div>
-    {adding && <AddProviderDialog existing={draft.providers.map(provider => provider.id)} onClose={() => setAdding(false)} onAdd={provider => { setDraft({ ...draft, providers: [...draft.providers, provider] }); setExpanded(provider.id); setAdding(false) }} />}
-    {removing && <Dialog title="删除提供方" onClose={() => setRemoving(null)}><div className="confirm-content"><p>将删除“{removing.displayName}”的共享模型配置。已保存的 API Key 会保留，可在删除前单独清除。</p><footer><button className="button outline" onClick={() => setRemoving(null)}>取消</button><button className="button danger" onClick={() => { const providers = draft.providers.filter(provider => provider.id !== removing.id); const { defaultModel, ...rest } = draft; setDraft(defaultModel?.provider === removing.id ? { ...rest, providers } : { ...draft, providers }); setRemoving(null) }}>删除提供方</button></footer></div></Dialog>}
-    {clearingKey && <Dialog title="清除 API Key" onClose={() => setClearingKey(null)}><div className="confirm-content"><p>将从共享凭据文件中清除“{clearingKey.displayName}”使用的 API Key。引用同一 Key 的其他提供方也会受到影响。</p><footer><button className="button outline" onClick={() => setClearingKey(null)}>取消</button><button className="button danger" onClick={() => { setSaving(true); void window.manager.setUnifiedCredential({ ref: clearingKey.apiKeyRef, value: null }).then(next => { setConfiguration(next); setDraft(current => current ? { ...current, providers: current.providers.map(provider => provider.apiKeyRef === clearingKey.apiKeyRef ? { ...provider, hasApiKey: false } : provider) } : structuredClone(next)); setKeyDrafts(current => { const changed = { ...current }; for (const provider of next.providers) if (provider.apiKeyRef === clearingKey.apiKeyRef) delete changed[provider.id]; return changed }); setClearingKey(null) }).catch(error => onError(errorText(error))).finally(() => setSaving(false)) }}>清除 Key</button></footer></div></Dialog>}
+    {removing && <Dialog title="删除提供方" onClose={() => setRemoving(null)}><div className="confirm-content"><p>将删除“{removing.displayName.trim() || removing.id}”的共享模型配置。已保存的 API Key 会保留，可在删除前单独清除。</p><footer><button className="button outline" onClick={() => setRemoving(null)}>取消</button><button className="button danger" onClick={() => { const providers = draft.providers.filter(provider => provider.id !== removing.id); const { defaultModel, ...rest } = draft; setDraft(defaultModel?.provider === removing.id ? { ...rest, providers } : { ...draft, providers }); setRemoving(null) }}>删除提供方</button></footer></div></Dialog>}
+    {clearingKey && <Dialog title="清除 API Key" onClose={() => setClearingKey(null)}><div className="confirm-content"><p>将从共享凭据文件中清除“{clearingKey.displayName.trim() || clearingKey.id}”使用的 API Key。引用同一 Key 的其他提供方也会受到影响。</p><footer><button className="button outline" onClick={() => setClearingKey(null)}>取消</button><button className="button danger" onClick={() => { setSaving(true); void window.manager.setUnifiedCredential({ ref: clearingKey.apiKeyRef, value: null }).then(next => { setConfiguration(next); setDraft(current => current ? { ...current, providers: current.providers.map(provider => provider.apiKeyRef === clearingKey.apiKeyRef ? { ...provider, hasApiKey: false } : provider) } : structuredClone(next)); setKeyDrafts(current => { const changed = { ...current }; for (const provider of next.providers) if (provider.apiKeyRef === clearingKey.apiKeyRef) delete changed[provider.id]; return changed }); setClearingKey(null) }).catch(error => onError(errorText(error))).finally(() => setSaving(false)) }}>清除 Key</button></footer></div></Dialog>}
     {discovery && <DiscoveryModelsDialog candidates={discovery.candidates} configured={draft.providers.find(provider => provider.id === discovery.providerId)?.models ?? []} picked={discovery.picked} onToggle={toggleDiscoveredModel} onToggleAll={toggleAllDiscoveredModels} onClose={() => setDiscovery(null)} onAdopt={adoptDiscoveredModels} />}
     {riskOpen && <Dialog title="启用完全访问" onClose={() => { setRiskOpen(false); setRiskAcknowledged(false) }}><div className="confirm-content"><p>以后创建的会话将可以访问工作区之外的文件，并且不会请求批准。</p><label className="check-row"><input type="checkbox" checked={riskAcknowledged} onChange={event => setRiskAcknowledged(event.target.checked)} />我了解这会扩大新会话的系统访问范围</label><footer><button className="button outline" onClick={() => { setRiskOpen(false); setRiskAcknowledged(false) }}>取消</button><button className="button danger" disabled={!riskAcknowledged} onClick={() => { setDraft({ ...draft, defaultPermission: 'danger-full-access' }); setRiskOpen(false); setRiskAcknowledged(false) }}>启用完全访问</button></footer></div></Dialog>}
   </div>
@@ -353,22 +400,6 @@ function DiscoveryModelsDialog({ candidates, configured, picked, onToggle, onTog
 
 function ConfigRow({ title, detail, children }: { title: string; detail: string; children: ReactNode }): ReactNode {
   return <div className="configuration-row"><span><strong>{title}</strong><small>{detail}</small></span><div>{children}</div></div>
-}
-
-function AddProviderDialog({ existing, onClose, onAdd }: { existing: string[]; onClose: () => void; onAdd: (provider: UnifiedProviderProfile) => void }): ReactNode {
-  const [id, setId] = useState('')
-  const [displayName, setDisplayName] = useState('')
-  const [baseURL, setBaseURL] = useState('')
-  const [protocol, setProtocol] = useState<UnifiedProviderProfile['protocol']>('openai-completions')
-  const [error, setError] = useState<string | null>(null)
-  const submit = (event: FormEvent): void => {
-    event.preventDefault()
-    const route = id.trim()
-    if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(route) || existing.includes(route)) { setError(existing.includes(route) ? '提供方 ID 已存在。' : 'ID 只能使用小写字母、数字和连字符。'); return }
-    if (!displayName.trim() || !baseURL.trim()) { setError('显示名称和 Base URL 不能为空。'); return }
-    onAdd({ id: route, kind: 'custom', displayName: displayName.trim(), protocol, apiKeyRef: `${route.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`, hasApiKey: false, baseURL: baseURL.trim(), models: [] })
-  }
-  return <Dialog title="添加自定义提供方" onClose={onClose}><form className="form" onSubmit={submit}>{error && <p className="inline-error">{error}</p>}<div className="provider-grid"><label className="field"><span>提供方 ID</span><input autoFocus value={id} placeholder="例如 sub2api" onChange={event => setId(event.target.value)} /></label><label className="field"><span>显示名称</span><input value={displayName} placeholder="例如 Sub2API" onChange={event => setDisplayName(event.target.value)} /></label></div><label className="field"><span>Base URL</span><input value={baseURL} placeholder="https://api.example.com/v1" onChange={event => setBaseURL(event.target.value)} /></label><label className="field"><span>API 协议</span><select value={protocol} onChange={event => setProtocol(event.target.value as UnifiedProviderProfile['protocol'])}><option value="openai-completions">OpenAI Completions</option><option value="openai-responses">OpenAI Responses</option><option value="anthropic-messages">Anthropic Messages</option></select></label><footer><button className="button outline" type="button" onClick={onClose}>取消</button><button className="button primary">继续配置模型</button></footer></form></Dialog>
 }
 
 function HomePage({ snapshot, busy, onModal, onOpen, onRun, onLog, onConfirm, onUseTemplate }: { snapshot: ManagerSnapshot; busy: string | null; onModal: (modal: Modal) => void; onOpen: (id: string) => void; onRun: Runner; onLog: (instance: InstanceRecord) => Promise<void>; onConfirm: (confirmation: Confirmation) => void; onUseTemplate: (id: string) => void }): ReactNode {

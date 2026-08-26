@@ -180,7 +180,7 @@ try {
 
   const providerCard = page.locator('.provider-profile').filter({ hasText: 'sub2api' })
   await providerCard.locator('.provider-summary').click()
-  await providerCard.getByLabel('显示名称').fill('Smoke Gateway')
+  await providerCard.getByLabel('显示名称（可选）').fill('Smoke Gateway')
   await providerCard.getByLabel('请求超时（分钟）').fill('15')
   await providerCard.getByLabel('流空闲超时（分钟）').fill('10')
   await providerCard.getByLabel('API Key').fill(`rotated-${sentinel}`)
@@ -196,7 +196,7 @@ try {
   await page.locator('.configuration-nav').getByRole('button', { name: '通用', exact: true }).click()
   await page.getByLabel('默认模型').selectOption({ label: 'DeepSeek / Discovered DeepSeek Smoke' })
   await page.locator('.configuration-nav').getByRole('button', { name: '模型', exact: true }).click()
-  await page.getByRole('button', { name: '保存更改' }).click()
+  await page.getByRole('button', { name: '保存配置' }).click()
   let savedConfiguration
   for (let attempt = 0; attempt < 100; attempt += 1) {
     savedConfiguration = await page.evaluate(() => window.manager.getUnifiedConfiguration())
@@ -212,9 +212,35 @@ try {
     throw new Error(`Native configuration controls did not persist: ${JSON.stringify(savedConfiguration)}`)
   }
   if (JSON.stringify(savedConfiguration).includes(`rotated-${sentinel}`)) throw new Error('Saved configuration returned credential plaintext')
+  const inlineProviderId = `inline-${sentinel}`
+  await page.getByRole('button', { name: '添加自定义提供方' }).click()
+  if (await page.getByRole('dialog', { name: '添加自定义提供方' }).count()) throw new Error('Custom provider creation still opened a dialog')
+  let inlineProviderCard = page.locator('.provider-profile').filter({ hasText: 'new-provider' })
+  if (!await inlineProviderCard.locator('.provider-editor').isVisible()) throw new Error('New custom provider did not expand inline')
+  await inlineProviderCard.getByLabel('提供方 ID').fill(inlineProviderId)
+  inlineProviderCard = page.locator('.provider-profile').filter({ hasText: inlineProviderId })
+  if (await inlineProviderCard.getByLabel('显示名称（可选）').inputValue() !== '') throw new Error('Optional provider display name was prefilled')
+  await inlineProviderCard.getByLabel('Base URL').fill(discoveryBaseURL)
+  await inlineProviderCard.getByLabel('API Key').fill(`inline-key-${sentinel}`)
+  await inlineProviderCard.getByRole('button', { name: '发现可用模型' }).click()
+  const inlineDiscoveryDialog = page.getByRole('dialog', { name: '发现可用模型' })
+  await inlineDiscoveryDialog.waitFor()
+  await inlineDiscoveryDialog.getByRole('button', { name: '添加所选模型' }).click()
+  await page.getByRole('button', { name: '保存配置' }).click()
+  let inlineConfiguration
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    inlineConfiguration = await page.evaluate(() => window.manager.getUnifiedConfiguration())
+    const inline = inlineConfiguration.providers.find(provider => provider.id === inlineProviderId)
+    if (inline?.displayName === inlineProviderId && inline.hasApiKey && inline.models.some(model => model.id === discoveredModelId)) break
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  const inlineSaved = inlineConfiguration.providers.find(provider => provider.id === inlineProviderId)
+  if (inlineSaved?.displayName !== inlineProviderId || !inlineSaved.hasApiKey) throw new Error(`Inline provider did not persist with ID fallback: ${JSON.stringify(inlineSaved)}`)
+  if (discoveryAuthorizations.at(-1) !== `Bearer inline-key-${sentinel}`) throw new Error('Inline provider discovery did not use its typed key')
+
   const sharedCredentialPath = join(userData, 'model-configuration', 'home', '.credentials.yaml')
   const sharedCredential = await readFile(sharedCredentialPath, 'utf8')
-  if (!sharedCredential.includes(`rotated-${sentinel}`) || !sharedCredential.includes(`deepseek-${sentinel}`)) throw new Error('Native API Key fields did not update the isolated credential file')
+  if (!sharedCredential.includes(`rotated-${sentinel}`) || !sharedCredential.includes(`deepseek-${sentinel}`) || !sharedCredential.includes(`inline-key-${sentinel}`)) throw new Error('Native API Key fields did not update the isolated credential file')
   if (process.platform !== 'win32' && ((await stat(sharedCredentialPath)).mode & 0o077) !== 0) throw new Error('Shared credential file is not owner-only')
   const credentialOverlayPath = join(userData, 'model-configuration', 'credentials.cordis.yml')
   const credentialOverlay = await readFile(credentialOverlayPath, 'utf8')
@@ -230,14 +256,15 @@ try {
   await page.screenshot({ path: join(artifacts, 'configuration-1000x700.png'), fullPage: true })
   await page.setViewportSize({ width: 1440, height: 920 })
 
-  await providerCard.getByLabel('显示名称').fill('Unsaved Gateway')
+  if (!await providerCard.locator('.provider-editor').isVisible()) await providerCard.locator('.provider-summary').click()
+  await providerCard.getByLabel('显示名称（可选）').fill('Unsaved Gateway')
   await page.getByRole('button', { name: '概览', exact: true }).click()
   const discardDialog = page.getByRole('dialog', { name: '放弃未保存的更改？' })
   await discardDialog.waitFor()
   await discardDialog.getByRole('button', { name: '取消' }).click()
-  if (await providerCard.getByLabel('显示名称').inputValue() !== 'Unsaved Gateway') throw new Error('Canceling navigation discarded the provider draft')
-  await providerCard.getByLabel('显示名称').fill('Smoke Gateway')
-  await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent?.includes('保存更改') && button.hasAttribute('disabled')))
+  if (await providerCard.getByLabel('显示名称（可选）').inputValue() !== 'Unsaved Gateway') throw new Error('Canceling navigation discarded the provider draft')
+  await providerCard.getByLabel('显示名称（可选）').fill('Smoke Gateway')
+  await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent?.includes('保存配置') && button.hasAttribute('disabled')))
   await page.getByRole('button', { name: '概览', exact: true }).click()
 
   await page.screenshot({ path: join(artifacts, 'home-1440x920.png'), fullPage: true })
