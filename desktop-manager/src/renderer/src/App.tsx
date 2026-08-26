@@ -347,7 +347,13 @@ function ModelsPage({ runningCount, onDirtyChange, onError }: { runningCount: nu
       await load()
     } finally { setSaving(false) }
   }
-  const dirty = configuration !== null && draft !== null && (JSON.stringify(configurationInput(configuration)) !== JSON.stringify(configurationInput(draft)) || Object.values(keyDrafts).some(value => value.trim()))
+  const generalDirty = configuration !== null && draft !== null && (
+    configuration.locale !== draft.locale || configuration.theme !== draft.theme || configuration.defaultPermission !== draft.defaultPermission || configuration.busyEnter !== draft.busyEnter
+  )
+  const modelsDirty = configuration !== null && draft !== null && (
+    JSON.stringify(configuration.providers) !== JSON.stringify(draft.providers) || JSON.stringify(configuration.defaultModel) !== JSON.stringify(draft.defaultModel) || Object.values(keyDrafts).some(value => value.trim())
+  )
+  const dirty = generalDirty || modelsDirty
   useEffect(() => { onDirtyChange(dirty); return () => onDirtyChange(false) }, [dirty, onDirtyChange])
 
   if (!draft) return <div className="configuration-loading"><RefreshCw size={22} className="spin" /><span>正在读取统一配置…</span></div>
@@ -368,6 +374,7 @@ function ModelsPage({ runningCount, onDirtyChange, onError }: { runningCount: nu
           <ConfigRow title="外观" detail="新启动实例使用的主题偏好"><div className="segmented-control">{(['light', 'dark', 'system'] as const).map(value => <button key={value} aria-pressed={draft.theme === value} className={draft.theme === value ? 'active' : ''} onClick={() => setDraft({ ...draft, theme: value })}>{value === 'light' ? '浅色' : value === 'dark' ? '深色' : '跟随系统'}</button>)}</div></ConfigRow>
           <ConfigRow title="默认权限" detail="只影响以后创建的会话"><select aria-label="默认权限" value={draft.defaultPermission} onChange={event => { const value = event.target.value as UnifiedConfiguration['defaultPermission']; if (value === 'danger-full-access') setRiskOpen(true); else setDraft({ ...draft, defaultPermission: value }) }}><option value="read-only">只读</option><option value="workspace-write">工作区可写</option><option value="danger-full-access">完全访问</option></select></ConfigRow>
           <ConfigRow title="忙碌时按 Enter" detail="选择追加排队或立即引导当前回复"><select aria-label="忙碌时按 Enter" value={draft.busyEnter} onChange={event => setDraft({ ...draft, busyEnter: event.target.value as UnifiedConfiguration['busyEnter'] })}><option value="steer">立即引导</option><option value="queue">加入队列</option></select></ConfigRow>
+          {generalDirty && <footer className="configuration-save-bar"><span>通用设置有未保存的更改</span><button className="button primary" disabled={saving} onClick={() => void save()}><Save size={16} />{saving ? '正在保存…' : '保存通用设置'}</button></footer>}
         </section> : <section className="configuration-section models-section"><div className="configuration-section-heading"><div><h2>模型</h2><p>API Key 仅写入共享凭据文件，不会回显</p></div><button className="button outline small" disabled={creatingProviderId !== null} onClick={addProvider}><Plus size={15} />添加自定义提供方</button></div>
           <ConfigRow title="新会话默认模型" detail="选择一个具体提供方下的模型；思考深度使用该模型的默认值"><select aria-label="新会话默认模型" value={defaultModelValue} onChange={event => { const [provider, model] = event.target.value.split('\u0000'); const { defaultModel: _previousModel, defaultReasoningEffort: _previousEffort, ...rest } = draft; setDraft(provider && model ? { ...rest, defaultModel: { provider, model } } : rest) }}><option value="">使用 DSH 默认值</option>{modelGroups.map(group => <optgroup key={group.id} label={group.label}>{group.models.map(model => <option key={model.value} value={model.value}>{model.label}</option>)}</optgroup>)}</select></ConfigRow>
           <div className="provider-list">{draft.providers.map(provider => <article className={`provider-profile${expanded === provider.id ? ' expanded' : ''}`} key={provider.id}>
@@ -382,9 +389,9 @@ function ModelsPage({ runningCount, onDirtyChange, onError }: { runningCount: nu
               {provider.kind !== 'deepseek' && <footer className="provider-footer">{creatingProviderId === provider.id ? <button className="button outline small" onClick={() => cancelCreatingProvider(provider.id)}>取消新增</button> : <button className="button danger small" onClick={() => setRemoving(provider)}><Trash2 size={14} />删除提供方</button>}</footer>}
             </div>}
           </article>)}</div>
-        </section>}
-        <footer className="configuration-save-bar"><span>{dirty ? '有未保存的配置更改' : '配置已保存'}</span><button className="button primary" disabled={!dirty || saving} onClick={() => void save()}><Save size={16} />{saving ? '正在保存…' : '保存配置'}</button></footer>
-      </div>
+        {modelsDirty && <footer className="configuration-save-bar"><span>模型配置有未保存的更改</span><button className="button primary" disabled={saving} onClick={() => void save()}><Save size={16} />{saving ? '正在保存…' : '保存模型配置'}</button></footer>}
+         </section>}
+              </div>
     </div>
     {removing && <Dialog title="删除提供方" onClose={() => setRemoving(null)}><div className="confirm-content"><p>将删除“{removing.displayName.trim() || removing.id}”的共享模型配置。已保存的 API Key 会保留，可在删除前单独清除。</p><footer><button className="button outline" onClick={() => setRemoving(null)}>取消</button><button className="button danger" onClick={() => { const providers = draft.providers.filter(provider => provider.id !== removing.id); const { defaultModel, ...rest } = draft; setDraft(defaultModel?.provider === removing.id ? { ...rest, providers } : { ...draft, providers }); setRemoving(null) }}>删除提供方</button></footer></div></Dialog>}
     {clearingKey && <Dialog title="清除 API Key" onClose={() => setClearingKey(null)}><div className="confirm-content"><p>将从共享凭据文件中清除“{clearingKey.displayName.trim() || clearingKey.id}”使用的 API Key。引用同一 Key 的其他提供方也会受到影响。</p><footer><button className="button outline" onClick={() => setClearingKey(null)}>取消</button><button className="button danger" onClick={() => { setSaving(true); void window.manager.setUnifiedCredential({ ref: clearingKey.apiKeyRef, value: null }).then(next => { setConfiguration(next); setDraft(current => current ? { ...current, providers: current.providers.map(provider => provider.apiKeyRef === clearingKey.apiKeyRef ? { ...provider, hasApiKey: false } : provider) } : structuredClone(next)); setKeyDrafts(current => { const changed = { ...current }; for (const provider of next.providers) if (provider.apiKeyRef === clearingKey.apiKeyRef) delete changed[provider.id]; return changed }); setClearingKey(null) }).catch(error => onError(errorText(error))).finally(() => setSaving(false)) }}>清除 Key</button></footer></div></Dialog>}

@@ -165,6 +165,7 @@ try {
   if (await page.getByLabel('默认 Agent preset').count()) throw new Error('Unified general settings still exposed a raw Agent preset input')
   if (await page.getByLabel('默认思考深度').count() || await page.getByLabel('新会话默认模型').count()) throw new Error('Unified general settings still exposed model-specific controls')
   await page.locator('.configuration-nav').getByRole('button', { name: '模型', exact: true }).click()
+  if (await page.evaluate(() => [...document.querySelectorAll('button')].some(button => button.textContent?.includes('保存模型配置')))) throw new Error('Clean model settings still showed a save button')
   const deepseekCard = page.locator('.provider-profile').filter({ hasText: 'deepseek-official' })
   await deepseekCard.locator('.provider-summary').click()
   if (await deepseekCard.getByLabel('Base URL').inputValue() !== 'https://api.deepseek.com') throw new Error('DeepSeek official Base URL was not prefilled')
@@ -197,7 +198,7 @@ try {
   const defaultModelSelect = page.getByLabel('新会话默认模型')
   if (!await defaultModelSelect.locator('optgroup[label="DeepSeek"]').count()) throw new Error('Default model choices were not grouped by provider')
   await defaultModelSelect.selectOption({ label: 'Discovered DeepSeek Smoke' })
-  await page.getByRole('button', { name: '保存配置' }).click()
+  await page.getByRole('button', { name: '保存模型配置' }).click()
   let savedConfiguration
   for (let attempt = 0; attempt < 100; attempt += 1) {
     savedConfiguration = await page.evaluate(() => window.manager.getUnifiedConfiguration())
@@ -227,7 +228,7 @@ try {
   const inlineDiscoveryDialog = page.getByRole('dialog', { name: '发现可用模型' })
   await inlineDiscoveryDialog.waitFor()
   await inlineDiscoveryDialog.getByRole('button', { name: '添加所选模型' }).click()
-  await page.getByRole('button', { name: '保存配置' }).click()
+  await page.getByRole('button', { name: '保存模型配置' }).click()
   let inlineConfiguration
   for (let attempt = 0; attempt < 100; attempt += 1) {
     inlineConfiguration = await page.evaluate(() => window.manager.getUnifiedConfiguration())
@@ -235,6 +236,7 @@ try {
     if (inline?.displayName === inlineProviderId && inline.hasApiKey && inline.models.some(model => model.id === discoveredModelId)) break
     await new Promise(resolve => setTimeout(resolve, 100))
   }
+  if (await page.evaluate(() => [...document.querySelectorAll('button')].some(button => button.textContent?.includes('保存模型配置')))) throw new Error('Clean model settings still showed a save button')
   const inlineSaved = inlineConfiguration.providers.find(provider => provider.id === inlineProviderId)
   if (inlineSaved?.displayName !== inlineProviderId || !inlineSaved.hasApiKey) throw new Error(`Inline provider did not persist with ID fallback: ${JSON.stringify(inlineSaved)}`)
   if (discoveryAuthorizations.at(-1) !== `Bearer inline-key-${sentinel}`) throw new Error('Inline provider discovery did not use its typed key')
@@ -265,7 +267,6 @@ try {
   await discardDialog.getByRole('button', { name: '取消' }).click()
   if (await providerCard.getByLabel('显示名称（可选）').inputValue() !== 'Unsaved Gateway') throw new Error('Canceling navigation discarded the provider draft')
   await providerCard.getByLabel('显示名称（可选）').fill('Smoke Gateway')
-  await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent?.includes('保存配置') && button.hasAttribute('disabled')))
   await page.getByRole('button', { name: '概览', exact: true }).click()
 
   await page.screenshot({ path: join(artifacts, 'home-1440x920.png'), fullPage: true })
