@@ -20,7 +20,7 @@ pnpm build
 pnpm test:electron
 ```
 
-`pnpm test:electron` 使用带随机 UUID sentinel 的临时 Application Support；只有规范化路径是系统临时目录下的单层 `dsh-manager-electron-*` 目录时，测试才会创建一次性 settings 与 credential fixture。测试通过管理器原生表单修改 provider、模型、权限、Agent preset、Enter 行为和临时 API Key，确认页面不启动额外 DSH 进程或 WebContents、IPC 不回传凭据明文，再启动业务实例验证共享 provider、Key、默认值和偏好投影。其余覆盖包括内置与本地运行时、owner-only credential overlay、自动端口重选、运行中环境克隆、嵌入式 Web GUI、单实例锁、原生视图弹窗隔离和两种窗口尺寸。截图写入已忽略的 `.artifacts/`，不会停止、接管或修改现有 `127.0.0.1:3080` 服务及其凭据。
+`pnpm test:electron` 使用带随机 UUID sentinel 的临时 Application Support；只有规范化路径是系统临时目录下的单层 `dsh-manager-electron-*` 目录时，测试才会创建一次性 settings 与 credential fixture。测试通过管理器原生表单修改 provider、模型、权限、Enter 行为和临时 API Key，确认原 Agent preset 透明保留，并确认页面不启动额外 DSH 进程或 WebContents、IPC 不回传凭据明文，再启动业务实例验证共享 provider、Key、默认值和偏好投影。其余覆盖包括内置与本地运行时、owner-only credential overlay、自动端口重选、运行中环境克隆、嵌入式 Web GUI、单实例锁、原生视图弹窗隔离和两种窗口尺寸。截图写入已忽略的 `.artifacts/`，不会停止、接管或修改现有 `127.0.0.1:3080` 服务及其凭据。
 
 ## 发布
 
@@ -40,7 +40,7 @@ pnpm package
 - 注册本地 DSH 源码，显示 Git commit 与工作树状态；可执行受限的依赖安装、类型检查、测试和构建任务，持久化任务日志，失败或中断时保持启动门禁。
 - 从任意本地 Git runtime 创建管理器受管 worktree，自动注册并要求完成安装和构建；不预设任何候选版本目录名称。
 - 设置默认运行时；创建独立、生产和克隆 DSH_HOME。运行中的克隆来源会先停止，复制完成后立即恢复。
-- 侧栏“统一配置”由管理器即时渲染，不启动 DSH。页面按通用与模型分区维护预置官方 Base URL 和 `DEEPSEEK_API_KEY` 凭据槽位、初始模型列表为空的 DeepSeek provider，以及自定义 OpenAI/Anthropic-compatible provider、write-only API Key、Base URL、请求/流空闲超时、OpenAI-compatible 模型自动发现与候选选择、列表内直接展开的自定义 provider 创建（仅 ID、Base URL、协议和至少一个模型必填，显示名称选填）、内容底部保存、模型目录、默认模型与思考深度、默认权限、Agent preset、语言、主题和忙碌时 Enter 行为。共享配置投影 `llm-deepseek`、`llm-pi-ai`、`agent-default-model`、`permission`、`agent-presets`、`locale`、`ui-theme` 和 `ui-conversation`；默认模型、权限与 Agent preset 只作用于以后创建的会话。onboarding、工作区、会话记录、会话已选模型/权限/preset、日志与缓存继续隔离；运行中的实例在重启后应用统一配置变更。
+- 侧栏“统一配置”由管理器即时渲染，不启动 DSH。页面按通用与模型分区维护预置官方 Base URL 和 `DEEPSEEK_API_KEY` 凭据槽位、初始模型列表为空的 DeepSeek provider，以及自定义 OpenAI/Anthropic-compatible provider、write-only API Key、Base URL、请求/流空闲超时、OpenAI-compatible 模型自动发现与候选选择、列表内直接展开的自定义 provider 创建（仅 ID、Base URL、协议和至少一个模型必填，显示名称选填）、内容底部保存、模型目录、默认模型与思考深度、默认权限、语言、主题和忙碌时 Enter 行为。共享配置投影 `llm-deepseek`、`llm-pi-ai`、`agent-default-model`、`permission`、`agent-presets`、`locale`、`ui-theme` 和 `ui-conversation`；默认模型与权限只作用于以后创建的会话，既有 Agent preset 值透明保留但不在统一配置中暴露。onboarding、工作区、会话记录、会话已选模型/权限/preset、日志与缓存继续隔离；运行中的实例在重启后应用统一配置变更。
 - 创建、启动、停止、强制停止、重启和删除实例。新建实例只选择名称、运行时和环境；管理器为进程创建独立的内部启动目录，项目工作区由用户在 DSH 新建会话时选择。删除隔离环境需要明确选择；生产 DSH_HOME 永不由管理器删除。
 - 每次启动均通过 DSH `--port 0` 自动分配端口。管理器解析 readiness URL、执行 HTTP 确认、持久化日志，并在隔离的 `WebContentsView` 中打开 GUI。
 - 停止以整个 detached 进程组消失为完成条件。管理器异常退出后的活动实例、任务和长操作进入恢复隔离，不会直接复用旧 PID 或端口。

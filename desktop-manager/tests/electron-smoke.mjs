@@ -161,7 +161,7 @@ try {
 
   await page.locator('.configuration-row').filter({ hasText: '默认权限' }).locator('select').selectOption('read-only')
   await page.locator('.configuration-row').filter({ hasText: '忙碌时按 Enter' }).locator('select').selectOption('queue')
-  await page.getByLabel('默认 Agent preset').fill('minimal')
+  if (await page.getByLabel('默认 Agent preset').count()) throw new Error('Unified general settings still exposed a raw Agent preset input')
   await page.getByLabel('默认思考深度').selectOption('high')
   await page.locator('.configuration-nav').getByRole('button', { name: '模型', exact: true }).click()
   const deepseekCard = page.locator('.provider-profile').filter({ hasText: 'deepseek-official' })
@@ -208,7 +208,7 @@ try {
   const savedProvider = savedConfiguration.providers.find(provider => provider.id === 'sub2api')
   const savedDeepSeek = savedConfiguration.providers.find(provider => provider.id === 'deepseek-official')
   if (savedDeepSeek?.baseURL !== discoveryBaseURL || !savedDeepSeek.models.some(model => model.id === deepseekModelId) || savedConfiguration.defaultModel?.model !== deepseekModelId) throw new Error(`DeepSeek discovery did not persist: ${JSON.stringify({ savedDeepSeek, defaultModel: savedConfiguration.defaultModel })}`)
-  if (savedProvider?.displayName !== 'Smoke Gateway' || !savedProvider.hasApiKey || !savedProvider.models.some(model => model.id === discoveredModelId) || savedProvider.timeoutMs !== 900000 || savedProvider.streamIdleTimeoutMs !== 600000 || savedConfiguration.defaultReasoningEffort !== 'high' || savedConfiguration.defaultPermission !== 'read-only' || savedConfiguration.busyEnter !== 'queue' || savedConfiguration.defaultAgentPreset !== 'minimal') {
+  if (savedProvider?.displayName !== 'Smoke Gateway' || !savedProvider.hasApiKey || !savedProvider.models.some(model => model.id === discoveredModelId) || savedProvider.timeoutMs !== 900000 || savedProvider.streamIdleTimeoutMs !== 600000 || savedConfiguration.defaultReasoningEffort !== 'high' || savedConfiguration.defaultPermission !== 'read-only' || savedConfiguration.busyEnter !== 'queue' || savedConfiguration.defaultAgentPreset !== initialConfiguration.defaultAgentPreset) {
     throw new Error(`Native configuration controls did not persist: ${JSON.stringify(savedConfiguration)}`)
   }
   if (JSON.stringify(savedConfiguration).includes(`rotated-${sentinel}`)) throw new Error('Saved configuration returned credential plaintext')
