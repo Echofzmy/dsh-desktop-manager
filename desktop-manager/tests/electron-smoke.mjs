@@ -9,7 +9,6 @@ import { createServer } from 'node:net'
 import { spawn } from 'node:child_process'
 
 const projectRoot = new URL('..', import.meta.url).pathname
-const workspaceRoot = new URL('../..', import.meta.url).pathname
 const userData = await mkdtemp(join(tmpdir(), 'dsh-manager-electron-'))
 const canonicalUserData = await realpath(userData)
 const canonicalTmp = await realpath(tmpdir())
@@ -18,6 +17,9 @@ if (!relativeUserData || relativeUserData.startsWith('..') || relativeUserData.i
   throw new Error(`Refusing to create Electron fixtures outside an isolated temporary root: ${canonicalUserData}`)
 }
 const sentinel = randomUUID()
+const runtimeFixture = join(canonicalUserData, 'runtime-source')
+await mkdir(runtimeFixture, { recursive: true, mode: 0o700 })
+await writeFile(join(runtimeFixture, 'package.json'), '{"name":"@deepseek-ai/dsh-root","version":"0.0.0","private":true,"engines":{"node":">=22.19.0"},"packageManager":"pnpm@11.5.2"}\n', { mode: 0o600, flag: 'wx' })
 const fixtureModelId = `smoke-custom-${sentinel}`
 const discoveredModelId = `smoke-discovered-${sentinel}`
 const deepseekModelId = `deepseek-discovered-${sentinel}`
@@ -109,7 +111,7 @@ try {
 
   await page.getByRole('button', { name: '运行时', exact: true }).click()
   await page.getByRole('button', { name: '注册本地运行时' }).click()
-  await page.getByRole('textbox', { name: /运行时目录/u }).fill(join(workspaceRoot, 'dsh-v1'))
+  await page.getByRole('textbox', { name: /运行时目录/u }).fill(runtimeFixture)
   await page.getByRole('button', { name: '注册', exact: true }).click()
   let registered
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -120,7 +122,7 @@ try {
   }
   if (!registered || registered.preflight.checks.length === 0) {
     const body = (await page.locator('body').innerText()).slice(0, 1_000)
-    throw new Error(`Expected dsh-v1 to remain registered with a preflight report: ${JSON.stringify({ registered, body })}`)
+    throw new Error(`Expected the local runtime fixture to remain registered with a preflight report: ${JSON.stringify({ registered, body })}`)
   }
 
   await page.getByRole('button', { name: '概览', exact: true }).click()
@@ -138,7 +140,7 @@ try {
     await window.manager.stopInstance(instance.id)
     await window.manager.deleteInstance(instance.id, true)
     return { version: runtime.version, port: instance.port }
-  }, { workspace: workspaceRoot })
+  }, { workspace: projectRoot })
   if (!bundledProbe.version || !bundledProbe.port) throw new Error(`Bundled runtime probe was incomplete: ${JSON.stringify(bundledProbe)}`)
 
   await page.getByRole('button', { name: '统一配置', exact: true }).click()

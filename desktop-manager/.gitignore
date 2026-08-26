@@ -6,4 +6,13 @@ build/bundled-runtime.staging-*/
 coverage/
 .artifacts/
 *.log
+.env
+.env.*
+!.env.example
+.credentials.yaml
+manager-state.json
+*.pem
+*.p12
+*.mobileprovision
+local-runtimes/
 .DS_Store

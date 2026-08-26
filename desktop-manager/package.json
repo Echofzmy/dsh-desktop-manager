@@ -3,7 +3,14 @@
   "version": "0.4.7",
   "private": true,
   "description": "Desktop runtime and instance manager for DeepSeek Harness",
-  "author": "liangyc",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Echofzmy/dsh-desktop-manager.git"
+  },
+  "homepage": "https://github.com/Echofzmy/dsh-desktop-manager#readme",
+  "bugs": {
+    "url": "https://github.com/Echofzmy/dsh-desktop-manager/issues"
+  },
   "type": "module",
   "main": "out/main/index.js",
   "packageManager": "pnpm@11.5.2",

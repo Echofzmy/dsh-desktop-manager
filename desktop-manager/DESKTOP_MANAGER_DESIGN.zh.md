@@ -19,11 +19,8 @@
 目标目录结构：
 
 ```text
-/Users/liangyc/Documents/Deepseek-Harness/
-├── desktop-manager/   # 本桌面管理器
-├── dsh-v1/            # 当前本地运行版本
-├── <其他-runtime>/    # 用户按需注册的任意本地运行版本
-└── .../               # 更多本地版本
+<管理器源码目录>/                 # 本桌面管理器
+<任意本地目录>/<runtime-source>/ # 用户按需注册的 DSH 源码运行版本
 
 <应用 bundle>/Contents/Resources/runtimes/official/bundled/   # 内置官方 DSH，只读，随应用签名分发
 <应用数据目录>/
@@ -37,8 +34,6 @@
 ```
 
 应用数据目录位于 macOS Application Support，路径示例为 `~/Library/Application Support/DSH Manager/`。应用数据目录存放下载的官方版本、环境、实例状态、日志与锁，不存放内置官方版本；内置官方版本位于应用 bundle 内（见第 2 节目录结构）。应用数据绝不存放在被管理的运行版本目录内，保证运行版本全部损坏时管理器仍可启动。
-
-`/Users/liangyc/Documents/dsh` 到目标结构的迁移见第 11 节。
 
 ## 3. 核心概念
 
@@ -143,7 +138,7 @@
 
 ### 6.3 本地运行版本
 
-用户注册本机任意目录作为本地运行版本，例如 `/Users/liangyc/Documents/Deepseek-Harness/dsh-v1`。
+用户注册本机任意目录作为本地运行版本，例如 `~/Developer/dsh-runtime-source`。
 
 注册时记录：路径、名称、注册时间、Git 远端、当前 commit、工作树是否干净、Node 与 pnpm 版本、依赖是否安装、构建产物是否存在。
 
@@ -234,11 +229,9 @@ WebContents 安全配置：nodeIntegration 关闭，contextIsolation 开启；�
 
 凭据策略：provider Key 只通过管理器统一配置工作面的 write-only 字段提交给主进程，主进程以 DSH `version: 1 / refs` 格式写入 `<应用数据目录>/model-configuration/home/.credentials.yaml`。目录保持 `0700`，文件保持 `0600`，所有更新共用跨进程锁、持锁重读和原子替换；读取接口只返回 `hasApiKey`，不返回 value。管理器状态、renderer snapshot、读取 IPC 响应和日志不保存或展示 Key。实例通过只含 credential provider 路径的固定 `--patch` 引用同一文件，并从同一次 provider settings 投影快照删除实际 `apiKeyEnv` 继承变量，避免环境层优先级使受管 Key 被遮蔽，同时保留无关工具 Token。主进程拒绝非 POSIX 标识、`DSH_HOME`、`ELECTRON_RUN_AS_NODE` 和不属于当前 provider 的 credential ref。业务实例和管理器属于同一本机用户信任域；同一 UID 下的恶意 runtime 仍能主动读取用户文件，因此 partition 与 IPC 隔离只防止页面意外越权，不构成针对恶意本机代码的密钥隔离。用户只应启动可信 runtime。官方安装继续使用固定 registry、独立临时 HOME/cache/userconfig，删除 npm token、auth、proxy 与 Node 注入环境，并以 `--ignore-scripts` 禁止 lifecycle 代码；lockfile 除根条目外的每个包都必须具有固定 HTTPS registry URL 与 sha512 integrity。receipt 强制绑定 schema、source、registry、platform 和当前架构；发现、复用、碰撞发布与每次启动都重新核对 receipt、READY、完整文件清单及实际文件。
 
-## 11. 仓库现状
+## 11. 仓库边界
 
-当前主仓库为 `/Users/liangyc/Documents/Deepseek-Harness`，根级 `.git` 统一跟踪 `desktop-manager/` 与现有 DSH 源码目录；桌面管理器不预设、创建或依赖任何候选版本目录。
-
-当前 `dsh-v1` 是可注册的本地源码 runtime，但必须完成依赖安装和完整构建后才能启动。生产环境继续使用用户明确注册的 `~/.dsh`；开发实例默认使用应用数据目录中的独立环境或从现有环境克隆的副本。
+本仓库只包含桌面管理器源码，不包含任何本地 DSH 源码 checkout、应用数据、凭据、构建产物或下载生成的内置 runtime。开发者可以把任意可信 DSH 源码目录注册为本地 runtime；该目录必须完成依赖安装和完整构建后才能启动。生产环境继续使用用户明确注册的 DSH_HOME，开发实例默认使用应用数据目录中的独立环境或从现有环境克隆的副本。
 
 ## 12. 实施状态
 
