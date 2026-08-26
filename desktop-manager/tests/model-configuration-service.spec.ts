@@ -23,11 +23,11 @@ describe('ModelConfigurationService', () => {
   it('reads an immediate redacted configuration without starting DSH', async () => {
     const { projection, service } = await fixture()
     await writeFile(join(projection.home, '.credentials.yaml'), 'version: 1\nrefs:\n  DEEPSEEK_API_KEY: secret-never-returned\n', { mode: 0o600 })
+    await writeFile(join(projection.home, 'settings.yaml'), 'llm-deepseek:\n  models:\n    - id: deepseek-v4-flash\n      name: DeepSeek-V4-Flash\n      contextWindow: 1000000\n    - id: deepseek-v4-pro\n      name: DeepSeek-V4-Pro\n      contextWindow: 1000000\n    - id: deepseek-v4-flash-vision-exp\n      name: DeepSeek-V4-Flash-Vision-Exp\n      contextWindow: 1000000\n')
 
     const result = await service.read()
 
-    expect(result.providers[0]).toMatchObject({ id: 'deepseek-official', hasApiKey: true, protocol: 'deepseek' })
-    expect(result.providers[0]!.models.map(model => model.id)).toContain('deepseek-v4-flash')
+    expect(result.providers[0]).toMatchObject({ id: 'deepseek-official', hasApiKey: true, protocol: 'deepseek', baseURL: 'https://api.deepseek.com', models: [] })
     expect(JSON.stringify(result)).not.toContain('secret-never-returned')
     expect(result).toMatchObject({ defaultPermission: 'workspace-write', locale: 'system', theme: 'system', busyEnter: 'queue' })
   })
@@ -62,8 +62,10 @@ describe('ModelConfigurationService', () => {
       ])
       const typed = await service.discoverModels({ providerId: 'gateway', protocol: 'openai-completions', baseURL, apiKey: ' replacement-key ' })
       expect(typed).toHaveLength(2)
+      const deepseek = await service.discoverModels({ providerId: 'deepseek-official', protocol: 'deepseek', baseURL, apiKey: 'deepseek-probe-key' })
+      expect(deepseek.map(model => model.id)).toEqual(['model-a', 'model-b'])
       await expect(service.discoverModels({ providerId: 'gateway', protocol: 'openai-responses', baseURL, apiKey: 'wrong-key' })).rejects.toThrow('HTTP 401，请检查 API Key')
-      expect(authorizations).toEqual(['Bearer stored-probe-key', 'Bearer replacement-key', 'Bearer wrong-key'])
+      expect(authorizations).toEqual(['Bearer stored-probe-key', 'Bearer replacement-key', 'Bearer deepseek-probe-key', 'Bearer wrong-key'])
       expect(await readFile(projection.credentialsPath, 'utf8')).not.toContain('replacement-key')
     } finally {
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))

@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop-manager",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "description": "Desktop runtime and instance manager for DeepSeek Harness",
   "author": "liangyc",
@@ -49,7 +49,7 @@
   },
   "build": {
     "appId": "ai.deepseek.dsh-manager",
-    "buildVersion": "0.4.1",
+    "buildVersion": "0.4.2",
     "afterPack": "scripts/after-pack.mjs",
     "productName": "DSH 管理器",
     "directories": {

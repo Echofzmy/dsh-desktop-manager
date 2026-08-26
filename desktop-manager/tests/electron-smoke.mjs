@@ -20,12 +20,16 @@ if (!relativeUserData || relativeUserData.startsWith('..') || relativeUserData.i
 const sentinel = randomUUID()
 const fixtureModelId = `smoke-custom-${sentinel}`
 const discoveredModelId = `smoke-discovered-${sentinel}`
-let discoveryAuthorization
+const deepseekModelId = `deepseek-discovered-${sentinel}`
+const discoveryAuthorizations = []
 const discoveryServer = createHttpServer((request, response) => {
-  discoveryAuthorization = request.headers.authorization
+  discoveryAuthorizations.push(request.headers.authorization)
   if (request.url !== '/v1/models') { response.writeHead(404).end(); return }
+  const deepseek = request.headers.authorization === `Bearer deepseek-${sentinel}`
   response.setHeader('content-type', 'application/json')
-  response.end(JSON.stringify({ data: [{ id: fixtureModelId }, { id: discoveredModelId, name: 'Discovered Smoke Model', context_window: 96000, max_output_tokens: 6000 }] }))
+  response.end(JSON.stringify({ data: deepseek
+    ? [{ id: deepseekModelId, name: 'Discovered DeepSeek Smoke', context_window: 64000, max_output_tokens: 8000 }]
+    : [{ id: fixtureModelId }, { id: discoveredModelId, name: 'Discovered Smoke Model', context_window: 96000, max_output_tokens: 6000 }] }))
 })
 await new Promise((resolve, reject) => discoveryServer.listen(0, '127.0.0.1', resolve).once('error', reject))
 const discoveryBaseURL = `http://127.0.0.1:${discoveryServer.address().port}/v1`
@@ -148,6 +152,8 @@ try {
   if (configurationViews !== 0) throw new Error(`Unified configuration attached a WebContentsView: ${configurationViews}`)
   const initialConfiguration = await page.evaluate(() => window.manager.getUnifiedConfiguration())
   const initialProvider = initialConfiguration.providers.find(provider => provider.id === 'sub2api')
+  const initialDeepSeek = initialConfiguration.providers.find(provider => provider.id === 'deepseek-official')
+  if (initialDeepSeek?.baseURL !== 'https://api.deepseek.com' || initialDeepSeek.models.length !== 0 || !initialDeepSeek.hasApiKey) throw new Error(`DeepSeek native defaults are wrong: ${JSON.stringify(initialDeepSeek)}`)
   if (!initialProvider?.hasApiKey || !initialProvider.models.some(model => model.id === fixtureModelId)) {
     throw new Error(`Native configuration did not read the isolated fixture: ${JSON.stringify(initialConfiguration)}`)
   }
@@ -156,9 +162,22 @@ try {
   await page.locator('.configuration-row').filter({ hasText: '默认权限' }).locator('select').selectOption('read-only')
   await page.locator('.configuration-row').filter({ hasText: '忙碌时按 Enter' }).locator('select').selectOption('queue')
   await page.getByLabel('默认 Agent preset').fill('minimal')
-  await page.getByLabel('默认模型').selectOption({ label: 'DeepSeek / DeepSeek-V4-Flash' })
   await page.getByLabel('默认思考深度').selectOption('high')
   await page.locator('.configuration-nav').getByRole('button', { name: '模型', exact: true }).click()
+  const deepseekCard = page.locator('.provider-profile').filter({ hasText: 'deepseek-official' })
+  await deepseekCard.locator('.provider-summary').click()
+  if (await deepseekCard.getByLabel('Base URL').inputValue() !== 'https://api.deepseek.com') throw new Error('DeepSeek official Base URL was not prefilled')
+  if (await deepseekCard.locator('.model-row').count() !== 0) throw new Error('DeepSeek model list was not empty before discovery')
+  await deepseekCard.getByLabel('Base URL').fill(discoveryBaseURL)
+  await deepseekCard.getByLabel('API Key').fill(`deepseek-${sentinel}`)
+  const deepseekDiscoverButton = deepseekCard.getByRole('button', { name: '发现可用模型' })
+  if (await deepseekDiscoverButton.isDisabled()) throw new Error('DeepSeek discovery button stayed disabled after URL and API Key input')
+  await deepseekDiscoverButton.click()
+  const deepseekDiscoveryDialog = page.getByRole('dialog', { name: '发现可用模型' })
+  await deepseekDiscoveryDialog.waitFor()
+  if (!await deepseekDiscoveryDialog.locator('li').filter({ hasText: deepseekModelId }).getByRole('checkbox').isChecked()) throw new Error('DeepSeek candidate was not selected by default')
+  await deepseekDiscoveryDialog.getByRole('button', { name: '添加所选模型' }).click()
+
   const providerCard = page.locator('.provider-profile').filter({ hasText: 'sub2api' })
   await providerCard.locator('.provider-summary').click()
   await providerCard.getByLabel('显示名称').fill('Smoke Gateway')
@@ -173,23 +192,29 @@ try {
   if (!await existingCandidate.getByRole('checkbox').isDisabled()) throw new Error('Already configured discovery candidate was selectable')
   if (!await newCandidate.getByRole('checkbox').isChecked()) throw new Error('New discovery candidate was not selected by default')
   await discoveryDialog.getByRole('button', { name: '添加所选模型' }).click()
-  if (discoveryAuthorization !== `Bearer rotated-${sentinel}`) throw new Error('Discovery did not use the one-shot typed API key')
+  if (JSON.stringify(discoveryAuthorizations) !== JSON.stringify([`Bearer deepseek-${sentinel}`, `Bearer rotated-${sentinel}`])) throw new Error(`Discovery used unexpected authorization: ${JSON.stringify(discoveryAuthorizations)}`)
+  await page.locator('.configuration-nav').getByRole('button', { name: '通用', exact: true }).click()
+  await page.getByLabel('默认模型').selectOption({ label: 'DeepSeek / Discovered DeepSeek Smoke' })
+  await page.locator('.configuration-nav').getByRole('button', { name: '模型', exact: true }).click()
   await page.getByRole('button', { name: '保存更改' }).click()
   let savedConfiguration
   for (let attempt = 0; attempt < 100; attempt += 1) {
     savedConfiguration = await page.evaluate(() => window.manager.getUnifiedConfiguration())
     const provider = savedConfiguration.providers.find(candidate => candidate.id === 'sub2api')
-    if (provider?.displayName === 'Smoke Gateway' && provider.hasApiKey && provider.models.some(model => model.id === discoveredModelId) && provider.timeoutMs === 900000 && provider.streamIdleTimeoutMs === 600000 && savedConfiguration.defaultReasoningEffort === 'high') break
+    const deepseek = savedConfiguration.providers.find(candidate => candidate.id === 'deepseek-official')
+    if (provider?.displayName === 'Smoke Gateway' && provider.hasApiKey && provider.models.some(model => model.id === discoveredModelId) && deepseek?.models.some(model => model.id === deepseekModelId) && savedConfiguration.defaultModel?.model === deepseekModelId && provider.timeoutMs === 900000 && provider.streamIdleTimeoutMs === 600000 && savedConfiguration.defaultReasoningEffort === 'high') break
     await new Promise(resolve => setTimeout(resolve, 100))
   }
   const savedProvider = savedConfiguration.providers.find(provider => provider.id === 'sub2api')
+  const savedDeepSeek = savedConfiguration.providers.find(provider => provider.id === 'deepseek-official')
+  if (savedDeepSeek?.baseURL !== discoveryBaseURL || !savedDeepSeek.models.some(model => model.id === deepseekModelId) || savedConfiguration.defaultModel?.model !== deepseekModelId) throw new Error(`DeepSeek discovery did not persist: ${JSON.stringify({ savedDeepSeek, defaultModel: savedConfiguration.defaultModel })}`)
   if (savedProvider?.displayName !== 'Smoke Gateway' || !savedProvider.hasApiKey || !savedProvider.models.some(model => model.id === discoveredModelId) || savedProvider.timeoutMs !== 900000 || savedProvider.streamIdleTimeoutMs !== 600000 || savedConfiguration.defaultReasoningEffort !== 'high' || savedConfiguration.defaultPermission !== 'read-only' || savedConfiguration.busyEnter !== 'queue' || savedConfiguration.defaultAgentPreset !== 'minimal') {
     throw new Error(`Native configuration controls did not persist: ${JSON.stringify(savedConfiguration)}`)
   }
   if (JSON.stringify(savedConfiguration).includes(`rotated-${sentinel}`)) throw new Error('Saved configuration returned credential plaintext')
   const sharedCredentialPath = join(userData, 'model-configuration', 'home', '.credentials.yaml')
   const sharedCredential = await readFile(sharedCredentialPath, 'utf8')
-  if (!sharedCredential.includes(`rotated-${sentinel}`)) throw new Error('Native API Key field did not update the isolated credential file')
+  if (!sharedCredential.includes(`rotated-${sentinel}`) || !sharedCredential.includes(`deepseek-${sentinel}`)) throw new Error('Native API Key fields did not update the isolated credential file')
   if (process.platform !== 'win32' && ((await stat(sharedCredentialPath)).mode & 0o077) !== 0) throw new Error('Shared credential file is not owner-only')
   const credentialOverlayPath = join(userData, 'model-configuration', 'credentials.cordis.yml')
   const credentialOverlay = await readFile(credentialOverlayPath, 'utf8')
@@ -290,7 +315,9 @@ try {
     }
     const settings = await dshRpc(targetUrl, 'settings.describe', {})
     const defaultModel = settings.namespaces.find(namespace => namespace.ns === 'agent-default-model')?.value
-    if (defaultModel?.provider !== 'deepseek-official' || defaultModel?.reasoningEffort !== 'high') throw new Error(`Managed DSH default model or reasoning is wrong: ${JSON.stringify(defaultModel)}`)
+    if (defaultModel?.provider !== 'deepseek-official' || defaultModel?.model !== deepseekModelId || defaultModel?.reasoningEffort !== 'high') throw new Error(`Managed DSH default model or reasoning is wrong: ${JSON.stringify(defaultModel)}`)
+    const deepseekSettings = settings.namespaces.find(namespace => namespace.ns === 'llm-deepseek')?.value
+    if (deepseekSettings?.baseURL !== discoveryBaseURL || !deepseekSettings?.models?.some(model => model.id === deepseekModelId)) throw new Error(`Managed DSH DeepSeek discovery projection is wrong: ${JSON.stringify(deepseekSettings)}`)
     const piSettings = settings.namespaces.find(namespace => namespace.ns === 'llm-pi-ai')?.value
     const projectedProvider = piSettings?.providers?.sub2api
     if (projectedProvider?.timeoutMs !== 900000 || projectedProvider?.streamIdleTimeoutMs !== 600000 || !projectedProvider?.models?.some(model => model.id === discoveredModelId)) throw new Error(`Managed DSH provider discovery projection is wrong: ${JSON.stringify(projectedProvider)}`)

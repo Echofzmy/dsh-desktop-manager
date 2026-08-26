@@ -26,7 +26,8 @@ const CREDENTIAL_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 const RESERVED_CREDENTIAL_REFS = new Set(['DSH_HOME', 'ELECTRON_RUN_AS_NODE'])
 const PROTOCOLS = new Set<UnifiedProviderProtocol>(['openai-completions', 'openai-responses', 'anthropic-messages'])
 const REASONING_EFFORTS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
-const DISCOVERY_PROTOCOLS = new Set<UnifiedProviderProtocol>(['openai-completions', 'openai-responses'])
+const DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
+const DISCOVERY_PROTOCOLS = new Set<UnifiedProviderProtocol>(['deepseek', 'openai-completions', 'openai-responses'])
 const DISCOVERY_TIMEOUT_MS = 30_000
 const DISCOVERY_MAX_BYTES = 4 * 1024 * 1024
 const DISCOVERY_MAX_MODELS = 1_000
@@ -59,6 +60,16 @@ function modelsOf(value: unknown, fallback: UnifiedModelProfile[] = []): Unified
       ...typeof model.maxTokens === 'number' ? { maxTokens: model.maxTokens } : {},
     }
   })
+}
+
+function deepseekModelsOf(value: unknown): UnifiedModelProfile[] {
+  if (value === undefined) return []
+  const models = modelsOf(value)
+  const legacy = Array.isArray(value)
+    && models.length === DEFAULT_DEEPSEEK_MODELS.length
+    && value.every(item => Object.keys(recordOf(item)).every(key => ['id', 'name', 'contextWindow'].includes(key)))
+    && JSON.stringify(models) === JSON.stringify(DEFAULT_DEEPSEEK_MODELS)
+  return legacy ? [] : models
 }
 
 function mergeModels(existing: unknown, drafts: UnifiedModelProfile[]): Record<string, unknown>[] {
@@ -200,7 +211,7 @@ function validateInput(input: SaveUnifiedConfigurationInput): SaveUnifiedConfigu
   if (defaultModel) {
     const provider = providers.find(candidate => candidate.id === defaultModel.provider)
     if (!provider || !defaultModel.model) throw new Error('默认模型必须指向已配置的提供方。')
-    if (provider.models.length > 0 && !provider.models.some(model => model.id === defaultModel.model)) throw new Error('默认模型不在提供方的模型列表中。')
+    if (provider.kind !== 'catalog' && !provider.models.some(model => model.id === defaultModel.model)) throw new Error('默认模型不在提供方的模型列表中。')
   }
   const { defaultModel: _rawDefaultModel, ...rest } = input
   return { ...rest, providers, defaultAgentPreset, ...(defaultModel ? { defaultModel } : {}) }
@@ -235,10 +246,10 @@ export class ModelConfigurationService {
       protocol: 'deepseek',
       apiKeyRef: deepseekRef,
       hasApiKey: credentialRefs.has(deepseekRef),
-      ...(optionalString(deepseek.baseURL) ? { baseURL: optionalString(deepseek.baseURL)! } : {}),
+      baseURL: optionalString(deepseek.baseURL) ?? DEEPSEEK_BASE_URL,
       ...(typeof deepseek.timeoutMs === 'number' ? { timeoutMs: deepseek.timeoutMs } : {}),
       ...(typeof deepseek.streamIdleTimeoutMs === 'number' ? { streamIdleTimeoutMs: deepseek.streamIdleTimeoutMs } : {}),
-      models: modelsOf(deepseek.models, DEFAULT_DEEPSEEK_MODELS),
+      models: deepseekModelsOf(deepseek.models),
     }]
     const piProviders = recordOf(recordOf(settings['llm-pi-ai']).providers)
     for (const [id, raw] of Object.entries(piProviders)) {
@@ -261,12 +272,15 @@ export class ModelConfigurationService {
       })
     }
     const defaultModel = recordOf(settings['agent-default-model'])
+    const defaultProviderId = optionalString(defaultModel.provider)
+    const defaultModelId = optionalString(defaultModel.model)
+    const defaultProvider = providers.find(provider => provider.id === defaultProviderId)
+    const hasValidDefault = defaultProviderId !== undefined && defaultModelId !== undefined && defaultProvider !== undefined
+      && (defaultProvider.kind === 'catalog' || defaultProvider.models.some(model => model.id === defaultModelId))
     return {
       providers,
-      ...optionalString(defaultModel.provider) && optionalString(defaultModel.model)
-        ? { defaultModel: { provider: defaultModel.provider as string, model: defaultModel.model as string } }
-        : {},
-      ...(typeof defaultModel.reasoningEffort === 'string' && REASONING_EFFORTS.has(defaultModel.reasoningEffort) ? { defaultReasoningEffort: defaultModel.reasoningEffort as NonNullable<UnifiedConfiguration['defaultReasoningEffort']> } : {}),
+      ...(hasValidDefault ? { defaultModel: { provider: defaultProviderId, model: defaultModelId } } : {}),
+      ...(hasValidDefault && typeof defaultModel.reasoningEffort === 'string' && REASONING_EFFORTS.has(defaultModel.reasoningEffort) ? { defaultReasoningEffort: defaultModel.reasoningEffort as NonNullable<UnifiedConfiguration['defaultReasoningEffort']> } : {}),
       defaultPermission: (optionalString(recordOf(settings.permission).defaultPreset) ?? 'workspace-write') as UnifiedConfiguration['defaultPermission'],
       defaultAgentPreset: optionalString(recordOf(settings['agent-presets']).default) ?? 'standard',
       locale: (optionalString(recordOf(settings.locale).preference) ?? 'system') as UnifiedConfiguration['locale'],
