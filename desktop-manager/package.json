@@ -25,7 +25,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:electron": "pnpm run build && node tests/electron-smoke.mjs",
+    "test:electron": "pnpm run prepare:bundled-runtime && pnpm run build && node tests/electron-smoke.mjs",
     "test:packaged": "DSH_MANAGER_EXECUTABLE=\"$PWD/dist/mac-arm64/DSH 管理器.app/Contents/MacOS/DSH 管理器\" node tests/electron-smoke.mjs",
     "prepare:bundled-runtime": "node scripts/prepare-bundled-runtime.mjs",
     "package:dir": "pnpm run prepare:bundled-runtime && pnpm run build && electron-builder --dir",
