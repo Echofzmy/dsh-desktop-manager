@@ -39,7 +39,7 @@ await mkdir(modelHome, { recursive: true, mode: 0o700 })
 await writeFile(sentinelPath, `${sentinel}\n`, { mode: 0o600, flag: 'wx' })
 if ((await readFile(sentinelPath, 'utf8')).trim() !== sentinel) throw new Error('Electron fixture sentinel verification failed')
 await writeFile(join(modelHome, '.credentials.yaml'), 'version: 1\nrefs:\n  DEEPSEEK_API_KEY: electron-fixture-deepseek\n  SUB2API_API_KEY: electron-fixture-sub2api\n', { mode: 0o600, flag: 'wx' })
-await writeFile(join(modelHome, 'settings.yaml'), `llm-pi-ai:\n  providers:\n    sub2api:\n      apiKeyEnv: SUB2API_API_KEY\n      api: openai-completions\n      baseURL: ${discoveryBaseURL}\n      models:\n        - id: ${fixtureModelId}\npermission:\n  defaultPreset: workspace-write\nui-theme:\n  preference: dark\nui-conversation:\n  busyEnter: steer\n`, { mode: 0o600, flag: 'wx' })
+await writeFile(join(modelHome, 'settings.yaml'), `llm-pi-ai:\n  providers:\n    sub2api:\n      apiKeyEnv: SUB2API_API_KEY\n      api: openai-completions\n      baseURL: ${discoveryBaseURL}\n      models:\n        - id: ${fixtureModelId}\nagent-default-model:\n  provider: sub2api\n  model: ${fixtureModelId}\n  reasoningEffort: high\npermission:\n  defaultPreset: workspace-write\nui-theme:\n  preference: dark\nui-conversation:\n  busyEnter: steer\n`, { mode: 0o600, flag: 'wx' })
 const artifacts = join(projectRoot, '.artifacts')
 await mkdir(artifacts, { recursive: true })
 
@@ -157,12 +157,13 @@ try {
   if (!initialProvider?.hasApiKey || !initialProvider.models.some(model => model.id === fixtureModelId)) {
     throw new Error(`Native configuration did not read the isolated fixture: ${JSON.stringify(initialConfiguration)}`)
   }
+  if (initialConfiguration.defaultReasoningEffort !== 'high') throw new Error(`Existing model reasoning effort was not read: ${JSON.stringify(initialConfiguration.defaultReasoningEffort)}`)
   if (JSON.stringify(initialConfiguration).includes('electron-fixture')) throw new Error('Native configuration returned credential plaintext')
 
   await page.locator('.configuration-row').filter({ hasText: '默认权限' }).locator('select').selectOption('read-only')
   await page.locator('.configuration-row').filter({ hasText: '忙碌时按 Enter' }).locator('select').selectOption('queue')
   if (await page.getByLabel('默认 Agent preset').count()) throw new Error('Unified general settings still exposed a raw Agent preset input')
-  await page.getByLabel('默认思考深度').selectOption('high')
+  if (await page.getByLabel('默认思考深度').count() || await page.getByLabel('新会话默认模型').count()) throw new Error('Unified general settings still exposed model-specific controls')
   await page.locator('.configuration-nav').getByRole('button', { name: '模型', exact: true }).click()
   const deepseekCard = page.locator('.provider-profile').filter({ hasText: 'deepseek-official' })
   await deepseekCard.locator('.provider-summary').click()
@@ -193,22 +194,22 @@ try {
   if (!await newCandidate.getByRole('checkbox').isChecked()) throw new Error('New discovery candidate was not selected by default')
   await discoveryDialog.getByRole('button', { name: '添加所选模型' }).click()
   if (JSON.stringify(discoveryAuthorizations) !== JSON.stringify([`Bearer deepseek-${sentinel}`, `Bearer rotated-${sentinel}`])) throw new Error(`Discovery used unexpected authorization: ${JSON.stringify(discoveryAuthorizations)}`)
-  await page.locator('.configuration-nav').getByRole('button', { name: '通用', exact: true }).click()
-  await page.getByLabel('默认模型').selectOption({ label: 'DeepSeek / Discovered DeepSeek Smoke' })
-  await page.locator('.configuration-nav').getByRole('button', { name: '模型', exact: true }).click()
+  const defaultModelSelect = page.getByLabel('新会话默认模型')
+  if (!await defaultModelSelect.locator('optgroup[label="DeepSeek"]').count()) throw new Error('Default model choices were not grouped by provider')
+  await defaultModelSelect.selectOption({ label: 'Discovered DeepSeek Smoke' })
   await page.getByRole('button', { name: '保存配置' }).click()
   let savedConfiguration
   for (let attempt = 0; attempt < 100; attempt += 1) {
     savedConfiguration = await page.evaluate(() => window.manager.getUnifiedConfiguration())
     const provider = savedConfiguration.providers.find(candidate => candidate.id === 'sub2api')
     const deepseek = savedConfiguration.providers.find(candidate => candidate.id === 'deepseek-official')
-    if (provider?.displayName === 'Smoke Gateway' && provider.hasApiKey && provider.models.some(model => model.id === discoveredModelId) && deepseek?.models.some(model => model.id === deepseekModelId) && savedConfiguration.defaultModel?.model === deepseekModelId && provider.timeoutMs === 900000 && provider.streamIdleTimeoutMs === 600000 && savedConfiguration.defaultReasoningEffort === 'high') break
+    if (provider?.displayName === 'Smoke Gateway' && provider.hasApiKey && provider.models.some(model => model.id === discoveredModelId) && deepseek?.models.some(model => model.id === deepseekModelId) && savedConfiguration.defaultModel?.model === deepseekModelId && provider.timeoutMs === 900000 && provider.streamIdleTimeoutMs === 600000 && savedConfiguration.defaultReasoningEffort === undefined) break
     await new Promise(resolve => setTimeout(resolve, 100))
   }
   const savedProvider = savedConfiguration.providers.find(provider => provider.id === 'sub2api')
   const savedDeepSeek = savedConfiguration.providers.find(provider => provider.id === 'deepseek-official')
   if (savedDeepSeek?.baseURL !== discoveryBaseURL || !savedDeepSeek.models.some(model => model.id === deepseekModelId) || savedConfiguration.defaultModel?.model !== deepseekModelId) throw new Error(`DeepSeek discovery did not persist: ${JSON.stringify({ savedDeepSeek, defaultModel: savedConfiguration.defaultModel })}`)
-  if (savedProvider?.displayName !== 'Smoke Gateway' || !savedProvider.hasApiKey || !savedProvider.models.some(model => model.id === discoveredModelId) || savedProvider.timeoutMs !== 900000 || savedProvider.streamIdleTimeoutMs !== 600000 || savedConfiguration.defaultReasoningEffort !== 'high' || savedConfiguration.defaultPermission !== 'read-only' || savedConfiguration.busyEnter !== 'queue' || savedConfiguration.defaultAgentPreset !== initialConfiguration.defaultAgentPreset) {
+  if (savedProvider?.displayName !== 'Smoke Gateway' || !savedProvider.hasApiKey || !savedProvider.models.some(model => model.id === discoveredModelId) || savedProvider.timeoutMs !== 900000 || savedProvider.streamIdleTimeoutMs !== 600000 || savedConfiguration.defaultReasoningEffort !== undefined || savedConfiguration.defaultPermission !== 'read-only' || savedConfiguration.busyEnter !== 'queue' || savedConfiguration.defaultAgentPreset !== initialConfiguration.defaultAgentPreset) {
     throw new Error(`Native configuration controls did not persist: ${JSON.stringify(savedConfiguration)}`)
   }
   if (JSON.stringify(savedConfiguration).includes(`rotated-${sentinel}`)) throw new Error('Saved configuration returned credential plaintext')
@@ -342,7 +343,7 @@ try {
     }
     const settings = await dshRpc(targetUrl, 'settings.describe', {})
     const defaultModel = settings.namespaces.find(namespace => namespace.ns === 'agent-default-model')?.value
-    if (defaultModel?.provider !== 'deepseek-official' || defaultModel?.model !== deepseekModelId || defaultModel?.reasoningEffort !== 'high') throw new Error(`Managed DSH default model or reasoning is wrong: ${JSON.stringify(defaultModel)}`)
+    if (defaultModel?.provider !== 'deepseek-official' || defaultModel?.model !== deepseekModelId || defaultModel?.reasoningEffort !== undefined) throw new Error(`Managed DSH default model or reasoning is wrong: ${JSON.stringify(defaultModel)}`)
     const deepseekSettings = settings.namespaces.find(namespace => namespace.ns === 'llm-deepseek')?.value
     if (deepseekSettings?.baseURL !== discoveryBaseURL || !deepseekSettings?.models?.some(model => model.id === deepseekModelId)) throw new Error(`Managed DSH DeepSeek discovery projection is wrong: ${JSON.stringify(deepseekSettings)}`)
     const piSettings = settings.namespaces.find(namespace => namespace.ns === 'llm-pi-ai')?.value
