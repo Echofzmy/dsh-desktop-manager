@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { access, opendir, readFile, realpath, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { createRequire } from 'node:module'
 import { promisify } from 'node:util'
@@ -9,6 +10,25 @@ import type { PreflightCheck, PreflightReport } from '../shared/types.js'
 
 const execFileAsync = promisify(execFile)
 const BUILT_ENTRY = join('apps', 'cli', 'lib', 'bin.js')
+
+/**
+ * Electron launched by Finder does not reliably inherit the user's shell PATH.
+ * Keep inherited entries first, then add conventional macOS package-manager
+ * locations used by Homebrew, Corepack, and pnpm's per-user setup.
+ */
+export function toolEnvironment(): NodeJS.ProcessEnv {
+  const inherited = process.env.PATH?.split(':').filter(Boolean) ?? []
+  const candidates = [
+    join(homedir(), 'Library', 'pnpm'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+    '/usr/sbin',
+    '/sbin',
+  ]
+  return { ...process.env, PATH: [...new Set([...inherited, ...candidates])].join(':') }
+}
 
 async function buildFingerprint(runtimePath: string, roots: string[]): Promise<string> {
   const files: string[] = []
@@ -68,6 +88,7 @@ async function command(command: string, args: string[], cwd: string): Promise<st
       encoding: 'utf8',
       timeout: 5_000,
       maxBuffer: 1024 * 1024,
+      env: toolEnvironment(),
     })
     return result.stdout.trim()
   } catch {

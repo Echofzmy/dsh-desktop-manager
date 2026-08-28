@@ -3,7 +3,7 @@ import type { InstanceRecord } from '../shared/types.js'
 
 function managedUrl(instance: InstanceRecord): string {
   if (instance.status !== 'running' || instance.port <= 0) throw new Error('Instance is not ready for a Web view')
-  return `http://127.0.0.1:${instance.port}/`
+  return `http://127.0.0.1:${instance.port}/?dsh-instance=${encodeURIComponent(instance.name)}`
 }
 
 function safeBounds(bounds: Rectangle, window: BrowserWindow): Rectangle {

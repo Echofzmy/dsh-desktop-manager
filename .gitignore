@@ -1,1 +1,32 @@
+# Operating-system metadata
 .DS_Store
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+.credentials.yaml
+manager-state.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+
+# Dependencies, logs, and generated outputs
+node_modules/
+*.log
+coverage/
+.artifacts/
+.cache/
+.pnpm-store/
+
+# Local tool configuration
+/lefthook.yml
+
+# Runtime-owned local state
+.sessions/
+.storages/
+.dsh-build/
+.worktrees/
+worktrees/

@@ -35,6 +35,7 @@ const api: ManagerApi = {
   deleteEnvironment: (environmentId: string, deleteData?: boolean) => ipcRenderer.invoke(IPC.environmentDelete, environmentId, deleteData),
   createEnvironmentBackup: (environmentId: string) => ipcRenderer.invoke(IPC.environmentBackup, environmentId),
   createInstance: (input: CreateInstanceInput) => ipcRenderer.invoke(IPC.instanceCreate, input),
+  switchInstanceEnvironment: (instanceId: string, environmentId: string) => ipcRenderer.invoke(IPC.instanceEnvironmentSwitch, instanceId, environmentId),
   deleteInstance: (instanceId: string, deleteEnvironment?: boolean) => ipcRenderer.invoke(IPC.instanceDelete, instanceId, deleteEnvironment),
   preparePromotion: (candidateInstanceId: string, productionInstanceId: string, testConfirmed: boolean) => ipcRenderer.invoke(IPC.promotionPrepare, candidateInstanceId, productionInstanceId, testConfirmed),
   confirmPromotion: (promotionId: string) => ipcRenderer.invoke(IPC.promotionConfirm, promotionId),

@@ -210,4 +210,35 @@ describe('ManagerService environments', () => {
     expect(recovered).toMatchObject({ status: 'stopped', automaticPort: true, port: 0, interrupted: false })
     expect(recovered.pid).toBeUndefined()
   })
+
+  it('switches a stopped instance environment without changing its identity or workspace', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-manager-switch-environment-'))
+    roots.push(root)
+    const data = join(root, 'manager-data')
+    const workspace = join(root, 'workspace')
+    const sourceHome = join(root, 'source-home')
+    const targetHome = join(root, 'target-home')
+    await mkdir(data)
+    await mkdir(workspace)
+    await mkdir(sourceHome)
+    await mkdir(targetHome)
+    await writeFile(join(data, 'manager-state.json'), JSON.stringify({
+      version: 3,
+      settings: { openMode: 'embedded', checkUpdatesOnStartup: false },
+      runtimes: [{ id: 'runtime', name: 'Runtime', source: 'local', path: root, registeredAt: '2026-01-01T00:00:00.000Z', preflight: { checkedAt: '2026-01-01T00:00:00.000Z', ready: false, checks: [] } }],
+      environments: [
+        { id: 'source', name: 'Test', kind: 'isolated', path: sourceHome, createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'target', name: 'Development', kind: 'isolated', path: targetHome, createdAt: '2026-01-01T00:00:00.000Z' },
+      ],
+      instances: [{ id: 'instance', name: 'Release check', runtimeId: 'runtime', workspacePath: workspace, environmentId: 'source', port: 4567, automaticPort: false, createdAt: '2026-01-01T00:00:00.000Z', status: 'stopped' }],
+      tasks: [], backups: [], promotions: [], operations: [], templates: [],
+    }))
+    const manager = new ManagerService(data)
+    await manager.initialize()
+
+    const switched = await manager.switchInstanceEnvironment('instance', 'target')
+
+    expect(switched).toMatchObject({ id: 'instance', runtimeId: 'runtime', workspacePath: workspace, environmentId: 'target', port: 4567 })
+    expect(manager.snapshot().instances[0]?.environmentId).toBe('target')
+  })
 })

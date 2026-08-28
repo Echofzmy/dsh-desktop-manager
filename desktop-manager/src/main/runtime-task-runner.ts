@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, open, readFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { processGroupAlive } from './instance-supervisor.js'
+import { toolEnvironment } from './runtime-preflight.js'
 import type { RuntimeRecord, RuntimeTaskKind, RuntimeTaskRecord } from '../shared/types.js'
 
 const TASK_ARGS: Record<RuntimeTaskKind, string[]> = {
@@ -38,7 +39,7 @@ export class RuntimeTaskRunner {
     }
     const child = spawn('pnpm', TASK_ARGS[task.kind], {
       cwd: runtime.path,
-      env: { ...process.env, FORCE_COLOR: '0' },
+      env: { ...toolEnvironment(), FORCE_COLOR: '0' },
       detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
     })

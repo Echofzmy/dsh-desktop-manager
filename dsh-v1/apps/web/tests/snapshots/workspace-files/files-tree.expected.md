@@ -1,0 +1,18 @@
+- tree "Files tree":
+  - treeitem "src" [expanded]:
+    - img
+    - img
+    - text: src
+  - treeitem "lib":
+    - img
+    - img
+    - text: lib
+  - treeitem "index.ts":
+    - img
+    - text: index.ts
+  - treeitem ".env":
+    - img
+    - text: .env
+  - treeitem "README.md":
+    - img
+    - text: README.md

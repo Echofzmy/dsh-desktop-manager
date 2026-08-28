@@ -822,10 +822,18 @@ export interface Config {
    * @default 1024
    */
   coldBlankProbeMaxBytes?: number
+  /**
+   * Maximum combined file+directory rows one workspace.browse listing may
+   * carry. The name-sorted tail past the bound is cut and reported as
+   * `truncated`, so a huge directory never forces the deployment to hold or
+   * ship an unbounded listing.
+   * @default 1000
+   */
+  workspaceBrowseMaxEntries?: number
 }
 ```
 
-来源：[`packages/host/apiproxy/src/index.ts:41`](../packages/host/apiproxy/src/index.ts)
+来源：[`packages/host/apiproxy/src/index.ts:43`](../packages/host/apiproxy/src/index.ts)
 
 <a id="deepseek-aidsh-host-directory-picker-browse"></a>
 

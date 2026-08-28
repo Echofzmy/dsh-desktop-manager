@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
-import { preflightRuntime } from '../src/main/runtime-preflight.js'
+import { preflightRuntime, toolEnvironment } from '../src/main/runtime-preflight.js'
 
 const roots: string[] = []
 afterEach(async () => Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))))
@@ -20,6 +20,13 @@ async function runtimeFixture(): Promise<string> {
 }
 
 describe('preflightRuntime', () => {
+  it('augments GUI-process PATH with conventional macOS tool locations', () => {
+    const path = toolEnvironment().PATH?.split(':') ?? []
+    expect(path).toContain('/usr/local/bin')
+    expect(path).toContain('/opt/homebrew/bin')
+    expect(path).toContain(join(process.env.HOME ?? '', 'Library', 'pnpm'))
+  })
+
   it('keeps an unbuilt source checkout registered but blocked', async () => {
     const root = await runtimeFixture()
     const { report } = await preflightRuntime(root)

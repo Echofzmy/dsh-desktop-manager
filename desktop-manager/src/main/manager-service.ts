@@ -427,7 +427,7 @@ export class ManagerService {
         if (this.#runtimeReservations.has(runtimeId)) throw new Error('该运行版本仍有生产操作在进行。')
         draft.tasks.push(task)
         const target = requiredById(draft.runtimes, runtimeId, 'Runtime')
-        operation.artifacts.previousTaskBlocked = target.taskBlocked ?? ''
+        if (target.taskBlocked !== undefined) operation.artifacts.previousTaskBlocked = target.taskBlocked
         draft.operations.push(operation)
         target.taskBlocked = `${kind} 任务尚未成功完成。`
       })
@@ -701,6 +701,40 @@ export class ManagerService {
     await this.#store.update(draft => { draft.instances.push(instance) })
     this.#emit()
     return instance
+  }
+
+  async switchInstanceEnvironment(instanceId: string, environmentId: string): Promise<InstanceRecord> {
+    const snapshot = this.snapshot()
+    const instance = requiredById(snapshot.instances, instanceId, 'Instance')
+    const target = requiredById(snapshot.environments, environmentId, 'Target environment')
+    if (instance.environmentId === environmentId) return instance
+    if (instance.status !== 'stopped' && instance.status !== 'failed') throw new Error('实例必须已停止后才能切换环境。')
+    if (instance.interrupted) throw new Error('该实例仍处于崩溃隔离状态，请先确认旧进程已停止。')
+    if (snapshot.settings.productionInstanceId === instanceId || snapshot.environments.find(item => item.id === instance.environmentId)?.kind === 'production') {
+      throw new Error('生产实例不能直接切换环境。')
+    }
+    if (target.kind === 'production') throw new Error('不能将开发实例直接切换到生产环境。')
+    const occupant = snapshot.instances.find(item => item.id !== instanceId
+      && item.environmentId === environmentId
+      && ['starting', 'running', 'stopping'].includes(item.status))
+    if (occupant) throw new Error(`目标环境正在被实例“${occupant.name}”使用。`)
+    const source = requiredById(snapshot.environments, instance.environmentId, 'Current environment')
+    const paths = [...new Set([source.path, target.path])]
+    if (paths.some(path => this.#environmentReservations.has(path))) throw new Error('当前或目标环境仍有操作在进行。')
+    for (const path of paths) this.#environmentReservations.add(path)
+    try {
+      let updated: InstanceRecord | undefined
+      await this.#store.update(draft => {
+        const current = requiredById(draft.instances, instanceId, 'Instance')
+        if (current.status !== 'stopped' && current.status !== 'failed') throw new Error('实例必须已停止后才能切换环境。')
+        current.environmentId = environmentId
+        updated = current
+      })
+      this.#emit()
+      return updated!
+    } finally {
+      for (const path of paths) this.#environmentReservations.delete(path)
+    }
   }
 
   async deleteInstance(instanceId: string, deleteEnvironment = false): Promise<void> {

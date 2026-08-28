@@ -17,6 +17,7 @@ export const IPC = {
   environmentDelete: 'manager:environment:delete',
   environmentBackup: 'manager:environment:backup',
   instanceCreate: 'manager:instance:create',
+  instanceEnvironmentSwitch: 'manager:instance:environment-switch',
   instanceDelete: 'manager:instance:delete',
   promotionPrepare: 'manager:promotion:prepare',
   promotionConfirm: 'manager:promotion:confirm',

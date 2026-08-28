@@ -99,6 +99,7 @@ function registerIpc(): void {
   handle(IPC.environmentDelete, (_event, id: string, deleteData: unknown) => requiredManager().deleteEnvironment(assertId(id, 'Environment id'), deleteData !== false))
   handle(IPC.environmentBackup, (_event, id: string) => requiredManager().createEnvironmentBackup(assertId(id, 'Environment id')))
   handle(IPC.instanceCreate, (_event, input: CreateInstanceInput) => requiredManager().createInstance(input))
+  handle(IPC.instanceEnvironmentSwitch, (_event, instanceId: string, environmentId: string) => requiredManager().switchInstanceEnvironment(assertId(instanceId, 'Instance id'), assertId(environmentId, 'Environment id')))
   handle(IPC.instanceDelete, (_event, id: string, deleteEnvironment: unknown) => requiredManager().deleteInstance(assertId(id, 'Instance id'), deleteEnvironment === true))
   handle(IPC.promotionPrepare, (_event, candidateId: string, productionId: string, confirmed: unknown) => {
     if (typeof confirmed !== 'boolean') throw new Error('Promotion confirmation must be a boolean')

@@ -2,7 +2,7 @@
 
 用于在同一台电脑上管理多个 DeepSeek Harness 运行版本、实例、DSH_HOME 和共享启动配置的 Electron 桌面应用。界面使用中文 DSH 工作台结构；实例可以并行运行，并保持运行时、环境和端口相互独立。新实例使用管理器内部启动目录和自动端口，真正的项目工作区在 DSH 新建会话时选择。模型、API Key、默认权限和常用偏好在管理器自己的“统一配置”页面配置一次，无需启动 DSH。
 
-本仓库只包含管理器源码，不包含 DeepSeek Harness 源码 checkout、用户 DSH_HOME、凭据、应用数据、构建产物或下载生成的内置 runtime。打包任务根据 `package.json` 中固定的官方 npm 版本，在已忽略的生成目录中准备内置 runtime。
+本目录只包含管理器源码；同一 monorepo 中的 `dsh-v1/`、`dsh-v2/` 和 `dsh-v3/` 是独立的本地 DSH runtime 源码目录。仓库不包含用户 DSH_HOME、凭据、应用数据、构建产物或下载生成的内置 runtime。打包任务根据 `package.json` 中固定的官方 npm 版本，在已忽略的生成目录中准备内置 runtime。
 
 ## 开发
 

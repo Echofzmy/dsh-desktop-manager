@@ -311,6 +311,7 @@ export interface ManagerApi {
   deleteEnvironment(environmentId: string, deleteData?: boolean): Promise<void>
   createEnvironmentBackup(environmentId: string): Promise<BackupRecord>
   createInstance(input: CreateInstanceInput): Promise<InstanceRecord>
+  switchInstanceEnvironment(instanceId: string, environmentId: string): Promise<InstanceRecord>
   deleteInstance(instanceId: string, deleteEnvironment?: boolean): Promise<void>
   preparePromotion(candidateInstanceId: string, productionInstanceId: string, testConfirmed: boolean): Promise<PromotionRecord>
   confirmPromotion(promotionId: string): Promise<PromotionRecord>

@@ -1,0 +1,146 @@
+/* Workspace file tree (fills the region list seat in Files mode): one level
+   of the current Workspace's directory, lazily expanded. Rows share the
+   session-row geometry (32px, radius 8, 2px rhythm, themed scrollbar). */
+
+.treeBody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* Bottom fade: compact overlay pinned to the visible bottom,
+   transparent -> sidebar fill so it tracks the theme. */
+.fade {
+  position: absolute;
+  left: 0;
+  right: var(--dsh-session-list-edge-inset);
+  bottom: 0;
+  height: 24px;
+  background: linear-gradient(to bottom, transparent, var(--dsw-specific-sidebar-fill));
+  pointer-events: none;
+}
+
+/* Wide-only content fades back in on expand remount (mirrors the shell). */
+.wide {
+  animation: wide-in 200ms var(--ds-ease-in-out);
+}
+
+@keyframes wide-in {
+  from { opacity: 0; }
+}
+
+/* List: the only scrolling region, same inset accounting as the session list. */
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin-left: -4px;
+  margin-right: var(--dsh-session-list-scrollbar-offset);
+  padding-left: 4px;
+  padding-right: calc(
+    var(--dsh-session-list-edge-inset)
+    - var(--dsh-session-list-scrollbar-width)
+    - var(--dsh-session-list-scrollbar-offset)
+  );
+  /* Clears the compact bottom fade overlay at scroll end. */
+  padding-bottom: 16px;
+  scrollbar-gutter: stable;
+}
+
+/* One directory or file row: fixed height, depth-scaled inset via the
+   --dsh-files-indent variable the row carries. */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  padding: 0 8px;
+  padding-left: var(--dsh-files-indent);
+  cursor: pointer;
+  user-select: none;
+  color: var(--dsw-alias-label-primary);
+}
+
+.row + .row {
+  margin-top: 2px;
+}
+
+.row:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* Directory chevron: points right closed, rotates to point down open. */
+.chevron {
+  flex: none;
+  width: 14px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dsw-alias-label-caption);
+}
+
+.arrow {
+  transition: transform 150ms var(--ds-ease-in-out);
+}
+
+.arrowOpen {
+  transform: rotate(90deg);
+}
+
+/* Folder (directory rows) and file glyph share the 16px leading slot. */
+.folder {
+  flex: none;
+  width: 16px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+/* Status lines: loading/truncated notes, inline errors, and the empty state. */
+.status {
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.statusError {
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.empty {
+  padding: 16px 12px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wide {
+    animation: none;
+  }
+
+  .arrow {
+    transition: none;
+  }
+}
