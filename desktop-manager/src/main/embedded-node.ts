@@ -1,3 +1,6 @@
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+
 const REMOVED_ENVIRONMENT_KEYS = [
   'NODE_OPTIONS',
   'NODE_PATH',
@@ -16,8 +19,22 @@ function sanitizedEnvironment(): NodeJS.ProcessEnv {
   return env
 }
 
+function toolEnvironment(): NodeJS.ProcessEnv {
+  const inherited = process.env.PATH?.split(':').filter(Boolean) ?? []
+  const candidates = [
+    join(homedir(), 'Library', 'pnpm'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+    '/usr/sbin',
+    '/sbin',
+  ]
+  return { ...process.env, PATH: [...new Set([...inherited, ...candidates])].join(':') }
+}
+
 export function systemNodeLaunch(extra: NodeJS.ProcessEnv = {}): { executable: string; env: NodeJS.ProcessEnv } {
-  const env = sanitizedEnvironment()
+  const env: NodeJS.ProcessEnv = { ...sanitizedEnvironment(), PATH: toolEnvironment().PATH }
   delete env.ELECTRON_RUN_AS_NODE
   return { executable: 'node', env: { ...env, ...extra } }
 }
