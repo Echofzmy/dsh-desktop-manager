@@ -1,0 +1,29 @@
+- toolbar "Trajectory toolbar":
+  - button "Use actual duration": Duration
+  - button "Collapse turns": Turns
+  - button "Collapse calls": Calls
+  - img
+  - searchbox "Search trajectory"
+- region "Trajectory timeline"
+- table:
+  - rowgroup:
+    - row "SYSTEM, Initial System Prompt":
+      - cell "SYSTEM"
+      - cell "Initial System Prompt"
+    - 'row "USER, Run two shell commands: wait for cancellation, then write skipped.txt."':
+      - cell "Turn 1 USER": USER
+      - 'cell "Run two shell commands: wait for cancellation, then write skipped.txt."'
+    - 'row "CONTEXT, Current runtime context. This snapshot supersedes earlier runtime-context snapshots. Current DSH file policy: danger-full-access. The DSH file sandbox does not restrict file modifications by available operations. Approval prompts are disabled in this session: actions that require approval are rejected automatically — do not request sandbox escalation (do not set sandbox_permissions)."':
+      - cell "CONTEXT"
+      - 'cell "Current runtime context. This snapshot supersedes earlier runtime-context snapshots. Current DSH file policy: danger-full-access. The DSH file sandbox does not restrict file modifications by available operations. Approval prompts are disabled in this session: actions that require approval are rejected automatically — do not request sandbox escalation (do not set sandbox_permissions)."'
+    - row "Request 1, ASSISTANT, (tool call only)":
+      - 'cell "Request #1 ASSISTANT"':
+        - 'button "Request #1"'
+        - text: ASSISTANT
+      - cell "(tool call only)"
+    - 'row "TOOL, bash {\"command\":\"node -e \"require(''node:fs'').writeFileSync(''started.txt'', ''started''); setInterval(() => {}, 1000)\"\",\"description\":\"Wait until cancellation\"}, Stopped"':
+      - cell "TOOL"
+      - 'cell "bash{\"command\":\"node -e \"require(''node:fs'').writeFileSync(''started.txt'', ''started''); setInterval(() => {}, 1000)\"\",\"description\":\"Wait until cancellation\"} → ABORTED"'
+    - 'row "TOOL, bash {\"command\":\"printf skipped > skipped.txt\",\"description\":\"Write skipped marker\"}, Stopped"':
+      - cell "TOOL"
+      - 'cell "bash{\"command\":\"printf skipped > skipped.txt\",\"description\":\"Write skipped marker\"} → ABORTED_BEFORE_DISPATCH"'
