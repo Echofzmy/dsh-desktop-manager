@@ -9,7 +9,8 @@ This monorepo keeps the DSH desktop manager and the local DSH runtime versions i
 | `desktop-manager/` | Electron application for installing runtimes and managing DSH instances and environments. |
 | `dsh-v1/` | Preserved v1 runtime checkout. |
 | `dsh-v2/` | Preserved v2 runtime checkout. |
-| `dsh-v3/` | Active v3 runtime development checkout. |
+| `dsh-v3/` | Preserved v3 runtime checkout. |
+| `dsh-v4/` | Active v4 runtime development checkout. |
 
 Each project keeps its own package manager workspace, build scripts, documentation, tests, and ignore rules. Run commands from the project directory rather than from this repository root.
 
@@ -27,7 +28,7 @@ pnpm run build
 Build a local DSH runtime directly:
 
 ```bash
-cd dsh-v3
+cd dsh-v4
 pnpm install
 pnpm run build
 ```
